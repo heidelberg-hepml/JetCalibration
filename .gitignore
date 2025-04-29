@@ -1,0 +1,5 @@
+results/
+data/
+data_v2/
+Source/**/__pycache__/
+Source/**/__pycache__/*

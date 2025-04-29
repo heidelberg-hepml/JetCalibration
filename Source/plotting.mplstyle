@@ -1,0 +1,73 @@
+#### MATPLOTLIB (MPL) STYLE / CONFIGURATION FILE ####
+
+########## LINES ##########
+lines.linewidth  : 1 # line width in points
+lines.markersize : 1 # marker size in points
+
+########## PATCHES ##########
+patch.linewidth : 1 # edge width in points
+
+########## FONT ##########
+#font.family      : sans-serif
+#font.sans-serif  : Fira Sans
+font.size        : 12
+#mathtext.fontset : custom
+#mathtext.rm      : Fira Math:regular
+#mathtext.bf      : Fira Math:medium
+#mathtext.sf      : Fira Math
+#mathtext.it      : Fira Math:regular:italic
+#mathtext.tt      : Fira Mono
+
+########## LaTeX ##########
+text.usetex         : True # use latex for all text handling
+text.latex.preamble : \usepackage[scale=.85]{tgheros}\usepackage[frenchmath]{newtxsf}\renewcommand{\familydefault}{\sfdefault}\usepackage{mathastext}
+
+########## AXES ##########
+axes.grid                   : False # display grid or not
+axes.titlesize              : 12    # font size of the axes title
+axes.labelsize              : 12    # font size of the x and y labels
+axes.formatter.limits       : -5, 6
+axes.formatter.use_mathtext : True
+axes.prop_cycle             : cycler("color", ["3171a6", "cd1719", "459e43", "894693", "e67200", "8c564b"])
+
+########## AXIS ##########
+xaxis.labellocation : right # alignment of the xaxis label: {left, right, center}
+yaxis.labellocation : top   # alignment of the yaxis label: {bottom, top, center}
+
+########## TICKS ##########
+xtick.top           : True  # draw ticks on the top side
+xtick.bottom        : True  # draw ticks on the bottom side
+xtick.labelsize     : 12    # font size of the tick labels
+xtick.direction     : in    # direction: {in, out, inout}
+xtick.major.pad     : 5.00  # default 3.5
+xtick.minor.visible : True  # visibility of minor ticks on x-axis
+
+ytick.left          : True  # draw ticks on the left side
+ytick.right         : True  # draw ticks on the right side
+ytick.labelsize     : 12    # font size of the tick labels
+ytick.direction     : in    # direction: {in, out, inout}
+ytick.major.pad     : 5.00  # default 3.5
+ytick.minor.visible : True  # visibility of minor ticks on y-axis
+
+########## LEGEND ##########
+legend.loc            : upper right
+legend.frameon        : False
+legend.markerscale    : 2.00 # the relative size of legend markers vs. original (default 1.0)
+legend.fontsize       : 11
+legend.title_fontsize : 11
+legend.borderpad      : 0.4 # border whitespace (default 0.4)
+legend.labelspacing   : 0.50 # the vertical space between the legend entries (default 0.5)
+legend.handlelength   : 1.25 # the length of the legend lines (default 2.0)
+legend.handleheight   : 0.75 # the height of the legend handle (default 0.7)
+legend.handletextpad  : 0.65 # the space between the legend line and legend text (default 0.8)
+legend.borderaxespad  : 0.00 # the border between the axes and legend edge (default 0.5)
+legend.columnspacing  : 1.00 # column separation (default 2.0)
+
+########## FIGURE ##########
+figure.figsize : 2.953, 2.568 # figure size in inches
+figure.dpi     : 600 # figure dots per inch
+savefig.dpi    : 600 # figure dots per inch or 'figure'
+savefig.format : pdf # {png, ps, pdf, svg}
+
+########## HISTOGRAM PLOTS ##########
+hist.bins : 50
