@@ -2,25 +2,6 @@
 
 JetCalibration is a PyTorch Lightning-based framework for jet calibration regression tasks, supporting various neural network regression approaches including MSE, heteroscedastic, and Gaussian mixture model (GMM) regression.
 
-## Code Structure
-JetCalibration/
-├── Source/
-│ ├── dataset.py # Data loading and PyTorch Lightning DataModule(s)
-│ ├── model.py # Model definitions (BaseModel, MLP_MSE_Regression, etc.)
-│ ├── network.py # MLP and network architecture definitions
-│ ├── plots.py # Plotting utilities and analysis scripts
-│ └── ... # Other source files
-├── main.py # Main entry point for training and plotting
-├── param_cards/ # Example YAML parameter cards for runs
-├── results/ # Output directory for trained models and logs (gitignored)
-├── data/ # Data directory (gitignored)
-├── data_v2/ # Alternative data directory (gitignored)
-├── runfiles/ # Run-related files/scripts
-├── misc/ # Miscellaneous scripts/utilities
-├── .gitignore # Git ignore rules
-└── README.md # (You are here)
-
-
 ### Main Components
 
 - **main.py**  
