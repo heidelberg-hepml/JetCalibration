@@ -1,3 +1,37 @@
+"""
+This file contains plotting utilities for visualizing model predictions and performance.
+
+The file defines constants for figure sizes, layouts, colors, and ATLAS experiment info text.
+It also implements a Plotter class with methods for creating various diagnostic plots.
+
+Constants:
+    figs_hist1d (tuple): Figure size for 1D histograms (width, height)
+    figs_hist2d (tuple): Figure size for 2D histograms
+    figs_hist_twice (tuple): Figure size for double-width plots
+    figs_ratio (tuple): Figure size for ratio plots
+    rect_hist1d (tuple): Plot margins for 1D histograms (left, bottom, right, top)
+    rect_hist2d (tuple): Plot margins for 2D histograms
+    rect_ratio (tuple): Plot margins for ratio plots
+    subs (tuple): Minor tick locations for log scales
+    num_bins (int): Default number of histogram bins
+    dup_last (function): Helper to duplicate last array element
+    
+    colors (dict): Color definitions for plots
+        'bk': Black
+        'rd': Red
+        'gn': Green
+        'bl': Blue
+        'yl': Yellow
+        'cy': Cyan
+        'db': Dark blue
+        'br': Brown
+
+    atlas_info1, atlas_info2 (str): ATLAS experiment info text templates
+    
+    keys_current (list): Names of input features
+    log_scales (list): Whether each feature should use log scale
+"""
+
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -11,31 +45,38 @@ from Source.plot_utils import *
 plt.style.use('/remote/gpu07/huetsch/JetCalibration/Source/plotting.mplstyle')
 
 
-figs_hist1d = (1.40*2.953, 1.20*2.568)
-figs_hist2d = (1.40*2.953, 1.20*2.568)
-figs_hist_twice = (1.40*2.953*2, 1.20*2.568)
-figs_ratio  = (1.40*2.953, 1.40*2.568)
-rect_hist1d = (0.11, 0.11, 0.98, 0.97) # left, bottom, right, top
-rect_hist2d = (0.11, 0.11, 0.87, 0.97) # left, bottom, right, top
-rect_ratio  = (0.11, 0.09, 0.98, 0.97) # left, bottom, right, top
-subs        = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
-num_bins    = 100
-dup_last    = lambda a: np.append(a, a[-1])
+# Figure sizes and layout parameters
+figs_hist1d = (1.40*2.953, 1.20*2.568)  # Width, height for 1D histograms
+figs_hist2d = (1.40*2.953, 1.20*2.568)  # Width, height for 2D histograms  
+figs_hist_twice = (1.40*2.953*2, 1.20*2.568)  # Double width for side-by-side plots
+figs_ratio  = (1.40*2.953, 1.40*2.568)  # Width, height for ratio plots
 
+# Plot margins (left, bottom, right, top)
+rect_hist1d = (0.11, 0.11, 0.98, 0.97)  # For 1D histograms
+rect_hist2d = (0.11, 0.11, 0.87, 0.97)  # For 2D histograms
+rect_ratio  = (0.11, 0.09, 0.98, 0.97)  # For ratio plots
 
-c_bk = '#0a0a0a' # black      RGB(10,  10,  10)
-c_rd = '#ff0000' # red        RGB(255, 0, 0)
-c_gn = '#00CC00' # green      RGB(0, 204, 0)
-#c_gn = '#3BC14A' # green      RGB(0, 204, 0)
-c_bl = '#0000ff' # blue       RGB(0, 0, 255)
-c_yl = '#ffff00' # yellow     RGB(255, 255, 0)
-c_cy = '#00ffff' # cyan       RGB(0, 255, 255)
-c_db = '#006699' # dark blue  RGB( 0, 102, 153)
-c_br = '#663300' # brown      RGB(102, 51, 0)
-colors = {'bk': c_bk, 'rd': c_rd, 'gn': c_gn, 'bl': c_bl, 'yl': c_yl, 'cy': c_cy, 'db': c_db, 'br': c_br}
+# Other plotting parameters
+subs = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)  # Minor tick locations for log scales
+num_bins = 100  # Default number of histogram bins
+dup_last = lambda a: np.append(a, a[-1])  # Helper to duplicate last array element
 
+# Color definitions
+c_bk = '#0a0a0a'  # black      RGB(10,  10,  10)
+c_rd = '#ff0000'  # red        RGB(255, 0, 0)
+c_gn = '#00CC00'  # green      RGB(0, 204, 0)
+#c_gn = '#3BC14A'  # green      RGB(0, 204, 0)
+c_bl = '#0000ff'  # blue       RGB(0, 0, 255)
+c_yl = '#ffff00'  # yellow     RGB(255, 255, 0)
+c_cy = '#00ffff'  # cyan       RGB(0, 255, 255)
+c_db = '#006699'  # dark blue  RGB(0, 102, 153)
+c_br = '#663300'  # brown      RGB(102, 51, 0)
 
+# Color lookup dictionary
+colors = {'bk': c_bk, 'rd': c_rd, 'gn': c_gn, 'bl': c_bl, 
+          'yl': c_yl, 'cy': c_cy, 'db': c_db, 'br': c_br}
 
+# ATLAS experiment info text templates
 atlas_info1 = ('\\textbf{\\textit{ATLAS}} Simulation Internal\n'
                '{\\footnotesize $\sqrt{s}=13\,\\text{TeV}$ anti-$k_{\\text{T}}$ $R=0.4$ EMTopo jets}\n'
                '{\\footnotesize $p_{\\text{T,jet}}^{\\text{JES}}>20\,\\text{GeV}$, }'
@@ -48,85 +89,47 @@ atlas_info2 = ('\\textbf{\\textit{ATLAS}} Simulation Internal\n'
                '{\\footnotesize $\\vert y_{\\text{jet}}^{\\text{JES}}\\vert<2$,}\n'
                '{\\footnotesize $E_{\\text{clus}}^{\\text{dep}}>300\,\\text{MeV}$}')
 
-
-
-
-feature_range = { # dictionary containing all variables and their corresponding index, value range, binning and log-scaling
-                'r_ems': [0,  +1.000e-01, +6.900e+00, 1200, False, +5.000e-02, +4.950e+00], # r_truth or r_target (120 bins if x-axis)
-                'e_ems': [1,  +1.000e-02, +3.162e+03,   54,  True, +2.000e-01, +1.000e+03], # clusterE (cluster signal)
-                'y_ems': [2,  -2.750e+00, +2.750e+00,   55, False, -2.400e+00, +2.400e+00], # clusterEta (cluster rapidity)
-                'm_sig': [3,  +1.259e-03, +7.943e+02,   57,  True, +8.000e-02, +7.943e+02], # cluster_SIGNIFICANCE (signal significance)
-                't_ems': [4,  -1.230e+02, +1.230e+02,  123, False, -5.800e+01, +4.400e+01], # cluster_time (cluster time)
-                'm_tim': [5,  -1.000e+01, +1.990e+02,   50, False, +0.000e+00, +1.990e+02], # cluster_SECOND_TIME (cell-time variance)
-                'm_lam': [6,  +0.000e+00, +6.000e+03,  100, False, +4.900e-03, +4.100e+03], # cluster_CENTER_LAMBDA (depth in calorimeter)
-                'm_cog': [7,  +1.200e+03, +7.800e+03,  100, False, +1.200e+03, +6.600e+03], # cluster_CENTER_MAG (distance from vertex)
-                'm_fem': [8,  -1.000e-02, +1.001e+00,  102, False, -1.500e-02, +1.015e+00], # cluster_ENG_FRAC_EM (signal fraction in EMC)
-                'm_rho': [9,  +1.000e-09, +1.000e-03,   60,  True, +1.000e-09, +4.400e-04], # cluster_FIRST_ENG_DENS (signal density)
-                'm_lon': [10, -1.000e-02, +1.001e+00,  102, False, -1.500e-02, +1.015e+00], # cluster_LONGITUDINAL (longitudinal signal dispersion)
-                'm_lat': [11, -1.000e-02, +1.001e+00,  102, False, -1.500e-02, +1.015e+00], # cluster_LATERAL (lateral signal dispersion)
-                'm_ptd': [12, -1.000e-02, +1.001e+00,  102, False, -1.500e-02, +1.015e+00], # cluster_PTD (signal compactness)
-                'm_iso': [13, -1.000e-02, +1.001e+00,  102, False, -1.500e-02, +1.015e+00], # cluster_ISOLATION (cluster isolation)
-                'p_npv': [14, -2.500e-01, +9.575e+01,   48, False, -5.000e-02, +5.850e+01], # nPrimVtx (number of reconstructed primary vertices)
-                'p_mmu': [15, -2.500e-01, +9.575e+01,   48, False, -5.000e-02, +8.050e+01], # avgMu (number of pile-up interactions)
-                'e_dep': [16, +1.000e-02, +3.162e+03,   54,  True, +2.000e-01, +1.000e+03], # e_truth or cluster_ENG_CALIB_TOT
-                'e_dnn': [17, +1.000e-02, +3.162e+03,   54,  True, +2.000e-01, +1.000e+03], # e_model from deterministic NN (DNN)
-                'e_bnn': [18, +1.000e-02, +3.162e+03,   54,  True, +2.000e-01, +1.000e+03], # e_model from Bayesian NN (BNN)
-                'e_rde': [19, +1.000e-02, +3.162e+03,   54,  True, +2.000e-01, +1.000e+03], # e_model from Bayesian NN (RE)
-                'r_dnn': [20, +1.000e-01, +6.900e+00, 1200, False, +5.000e-02, +4.950e+00], # r_model from deterministic NN (120 bins if x-axis)
-                'r_bnn': [21, +1.000e-01, +6.900e+00, 1200, False, +5.000e-02, +4.950e+00], # r_model from Bayesian NN (120 bins if x-axis)
-                'r_rde': [22, +1.000e-01, +6.900e+00, 1200, False, +5.000e-02, +4.950e+00], # r_model from Bayesian NN (120 bins if x-axis)
-                'c_dnn': [23, -1.050e+00, +6.950e+00, 1600, False, -6.500e-01, +0.950e+00], # closure or prediction power: r_dnn/r_ems-1 (160 bins if x-axis)
-                'c_bnn': [24, -1.050e+00, +6.950e+00, 1600, False, -6.500e-01, +0.950e+00], # closure or prediction power: r_bnn/r_ems-1 (160 bins if x-axis)
-                'c_rde': [25, -1.050e+00, +6.950e+00, 1600, False, -6.500e-01, +0.950e+00], # closure or prediction power: r_bnn/r_ems-1 (160 bins if x-axis)
-                'l_ems': [26, -1.050e+00, +6.950e+00, 1600, False, -9.500e-01, +1.950e+00], # signal linearity: e_ems/e_dep-1 = clusterE/cluster_ENG_CALIB_TOT-1
-                'l_had': [27, -1.050e+00, +6.950e+00, 1600, False, -9.500e-01, +1.950e+00], # signal linearity: e_had/e_dep-1 = clusterECalib/cluster_ENG_CALIB_TOT-1
-                'l_dnn': [28, -1.050e+00, +6.950e+00, 1600, False, -9.500e-01, +1.950e+00], # signal linearity: e_dnn/e_dep-1 = e_dnn/cluster_ENG_CALIB_TOT-1
-                'l_bnn': [29, -1.050e+00, +6.950e+00, 1600, False, -9.500e-01, +1.950e+00], # signal linearity: e_bnn/e_dep-1 = e_bnn/cluster_ENG_CALIB_TOT-1
-                'l_rde': [30, -1.050e+00, +6.950e+00, 1600, False, -9.500e-01, +1.950e+00], # signal linearity: e_bnn/e_dep-1 = e_bnn/cluster_ENG_CALIB_TOT-1
-            }
-
-feature_names = { # dictionary containing all variables and their corresponding LaTeX description (and unit if needed)
-                'r_ems': [0,  'Target response', '$R_{\\text{clus}}^{\\text{EM}}$'],
-                'e_ems': [1,  'Cluster signal', '$E_{\\text{clus}}^{\\text{EM}}$', '[$\\text{GeV}$]'],
-                'y_ems': [2,  'Cluster rapidity', '$y_{\\text{clus}}^{\\text{EM}}$'],
-                'm_sig': [3,  'Signal significance', '$\zeta_{\\text{clus}}^{\\text{EM}}$'],
-                't_ems': [4,  'Cluster time', '$t_{\\text{clus}}$', '[$\\text{ns}$]'],
-                'm_tim': [5,  'Cell-time variance', '$\\text{Var}_{\\text{clus}}(t_{\\text{cell}})$', '[$\\text{ns}^{2}$]'],
-                'm_lam': [6,  'Depth in calorimeter', '$\lambda_{\\text{clus}}$', '[$\\text{mm}$]'],
-                'm_cog': [7,  'Distance from vertex', '$\\vert\\vec{c}_{\\text{clus}}\\vert$', '[$\\text{mm}$]'],
-                'm_fem': [8,  'Signal fraction in EMC', '$f_{\\text{emc}}$'],
-                'm_rho': [9,  'Signal density', '$\\rho_{\\text{clus}}=\langle\\rho_{\\text{cell}}\\rangle$', '[$\\text{GeV}/\\text{mm}^{3}$]'],
-                'm_lon': [10, 'Longitudinal signal dispersion', '$\langle\mathfrak{m}_{\\text{long}}^{2}\\rangle$'],
-                'm_lat': [11, 'Lateral signal dispersion', '$\langle\mathfrak{m}_{\\text{lat}}^{2}\\rangle$'],
-                'm_ptd': [12, 'Signal compactness', '$p_{\\text{T}}D$'],
-                'm_iso': [13, 'Cluster isolation', '$f_{\\text{iso}}$'],
-                'p_npv': [14, 'Number of reconstructed vertices', '$N_{\\text{PV}}$'],
-                'p_mmu': [15, 'Number of pile-up interactions', '$\mu$'],
-                'e_dep': [16, 'Deposited energy',   '$E_{\\text{clus}}^{\\text{dep}}$', '[$\\text{GeV}$]'],
-                'e_dnn': [17, 'DNN-calibrated energy', '$E_{\\text{clus}}^{\\text{DNN}}$', '[$\\text{GeV}$]'],
-                'e_bnn': [18, 'BNN-calibrated energy', '$E_{\\text{clus}}^{\\text{BNN}}$', '[$\\text{GeV}$]'],
-                'e_rde': [19,  'RE-calibrated energy', '$E_{\\text{clus}}^{\\text{RE}}$',  '[$\\text{GeV}$]'],
-                'r_dnn': [20, 'DNN-predicted response', '$R_{\\text{clus}}^{\\text{DNN}}$'],
-                'r_bnn': [21, 'BNN-predicted response', '$R_{\\text{clus}}^{\\text{BNN}}$'],
-                'r_rde': [22,  'RE-predicted response', '$R_{\\text{clus}}^{\\text{RE}}$'],
-                'c_dnn': [23, 'Prediciton power', '$\Delta_{R}^{\\text{DNN}}$'],
-                'c_bnn': [24, 'Prediciton power', '$\Delta_{R}^{\\text{BNN}}$'],
-                'c_rde': [25, 'Prediciton power', '$\Delta_{R}^{\\text{RE}}$'],
-                'l_ems': [26, 'Signal linearity', '$\Delta_{E}^{\\text{EM}}$'],
-                'l_had': [27, 'Signal linearity', '$\Delta_{E}^{\\text{had}}$'],
-                'l_dnn': [28, 'Signal linearity', '$\Delta_{E}^{\\text{DNN}}$'],
-                'l_bnn': [29, 'Signal linearity', '$\Delta_{E}^{\\text{BNN}}$'],
-                'l_rde': [30, 'Signal linearity', '$\Delta_{E}^{\\text{RE}}$'],
-            }
-
-# select target and input-feature keys from directory (response and 15 topo-cluster observables)
-keys_feats = [key for key in feature_names if (feature_names[key][0] >= 1) and (feature_names[key][0] <= 16)]
-
+# Input feature names and whether they should use log scale
 keys_current = ['E', 'mass', 'rap', 'groomMRatio', 'Width', 'Split12', 'Split23', 'C2', 'D2', 'Tau32', 'Tau21', 'Qw', 'EMFracCaloBased', 'EM3FracCaloBased', 'Tile0FracCaloBased', 'EffNClustsCaloBased', 'NeutralEFrac', 'ChargePTFrac', 'ChargeMFrac', 'averageMu', 'NPV']
 log_scales = [True, True, False, False, False, True, True, False, True, False, False, True, False, False, False, False, False, False, False, True, True]
 
 
+"""
+Plotting class and utility functions for visualizing model predictions and performance.
+
+The Plotter class handles creating various plots for analyzing model predictions:
+- Loss history plots
+- Input feature histograms
+- Response (R) prediction histograms and 2D comparisons
+- Energy/Mass prediction histograms and 2D comparisons 
+- Prediction uncertainty/standard deviation plots
+- GMM component weight distributions
+
+Key plotting utility functions:
+- make_hist_1dim_ratio: Creates 1D histogram with ratio panel
+- make_hist_2dim: Creates 2D histogram/heatmap
+
+The plots help visualize:
+- Model prediction accuracy vs ground truth
+- Prediction uncertainties and distributions
+- Input feature correlations
+- Training convergence
+"""
+
 class Plotter():
+    """
+    Class for creating various analysis plots of model predictions.
+    
+    Args:
+        plot_dir (str): Directory to save plots
+        params (dict): Model parameters
+        test_predictions (dict): Model predictions on test set
+        test_inputs (tensor): Input features for test set
+        test_targets (tensor): Target values for test set
+        samples (tensor): Samples drawn from predicted distributions
+        log_likelihoods (tensor): Log likelihoods of samples
+        variable (str): Target variable being predicted (E or M)
+    """
     def __init__(self, plot_dir, params, test_predictions, test_inputs, test_targets, samples, log_likelihoods, variable):
         self.plot_dir = plot_dir
         self.params = params
@@ -143,6 +146,7 @@ class Plotter():
 
 
     def plot_loss_history(self, name, train_loss, val_loss):
+        """Plot training and validation loss curves."""
         plt.plot(train_loss, label="Training loss")
         plt.plot(val_loss, label="Validation loss")
         plt.legend()
@@ -155,6 +159,7 @@ class Plotter():
 
 
     def plot_inputs_histogram(self, name):
+        """Create histograms of input features."""
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
             for feature in range(self.test_inputs.shape[1]):
                 input_data = self.test_inputs[:, feature]
@@ -180,7 +185,7 @@ class Plotter():
             
 
     def r_predictions_histogram(self, name):
-
+        """Create histograms comparing true vs predicted response values."""
         logR_truth = self.test_targets.squeeze()
         logR_pred_MC = self.samples.squeeze()
         logR_pred_mean = self.samples.mean(axis=1)
@@ -203,7 +208,6 @@ class Plotter():
             logscales  = [False, True],
             nbins      = 100,
             legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['upper right', 0.95, 0.95, None],
-            #legend     = ['upper right', 0.95, 0.95, None],
             atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'])
         
 
@@ -241,7 +245,7 @@ class Plotter():
         plt.close(fig2)
 
     def E_M_predictions_histogram(self, name):
-
+        """Create histograms comparing true vs predicted energy/mass values."""
         r_truth = 10**self.test_targets.squeeze()
         r_pred_MC = 10**self.samples.squeeze()
         r_pred_mean = (10**self.samples).mean(axis=1).squeeze()
@@ -299,6 +303,7 @@ class Plotter():
 
 
     def r_2d_histogram(self, name):
+        """Create 2D histograms comparing true vs predicted response values."""
         r_truth = self.test_targets.squeeze()            
 
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
@@ -348,7 +353,7 @@ class Plotter():
 
 
     def E_M_2d_histogram(self, name, variable="E", mode="sample"):
-
+        """Create 2D histograms comparing true vs predicted energy/mass values."""
         r_truth = 10**self.test_targets.squeeze()
         r_pred_MC = 10**self.samples.squeeze()[:, 0]
         r_pred_mean = (10**self.samples).mean(axis=1).squeeze()
@@ -391,7 +396,7 @@ class Plotter():
 
 
     def pred_inputs_histogram(self, name):
-
+        """Create histograms showing correlations between inputs and predictions."""
         r_truth = 10**self.test_targets.squeeze()
         r_pred = 10**self.samples[:, 0].squeeze()
 
@@ -480,7 +485,7 @@ class Plotter():
 
 
     def pred_inputs_histogram_marginalized(self, name):
-
+        """Create marginalized histograms showing input-prediction correlations."""
         r_truth = 10**self.test_targets.squeeze()
         r_pred = 10**self.samples.squeeze()
 
@@ -566,7 +571,7 @@ class Plotter():
 
 
     def plot_standard_deviations(self, name):
-
+        """Plot distributions of prediction standard deviations."""
         r_truth = 10**self.test_targets.squeeze()
         r_pred = 10**self.samples.squeeze()
         r_pred_std = np.std(r_pred, axis=1)
@@ -592,7 +597,7 @@ class Plotter():
             plt.close(fig)
 
     def plot_GMM_weights(self, name):
-
+        """Plot distributions of GMM component weights."""
         weight_key = [key for key in self.test_predictions.keys() if 'weights' in key][0]
         mu_key = [key for key in self.test_predictions.keys() if 'mu' in key][0]
         sigma_key = [key for key in self.test_predictions.keys() if 'sigma' in key][0]

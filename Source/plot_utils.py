@@ -1,3 +1,10 @@
+"""
+This file is copied from Lorenz. All questions to him please.
+It implements some plotting utility functions.
+"""
+
+
+
 import numpy as np
 from iminuit import cost, Minuit
 from sklearn import metrics
