@@ -707,7 +707,7 @@ def make_hist_1dim_ratio(data, labels, colors, showratios, ratioref, xlabel, rla
 
 
 def make_hist_2dim(data, labels, ranges, ticks=[[], []], logscales=[False, False], nbins=[100, 100],
-                   atlas_info=[0.97, 0.03, 'three-lines', 'right', 'bottom', 'none'], showdiag=True):
+                   atlas_info=[0.97, 0.03, 'three-lines', 'right', 'bottom', 'none'], showdiag=True, norm_rows=True):
 
     if logscales[0]: xbins = np.logspace(np.log10(ranges[0][0]), np.log10(ranges[0][1]), nbins[0]+1)
     else:            xbins = np.linspace(         ranges[0][0],           ranges[0][1],  nbins[0]+1)
@@ -727,7 +727,8 @@ def make_hist_2dim(data, labels, ranges, ticks=[[], []], logscales=[False, False
             hist, x_edges, y_edges = np.histogram2d(data[0][:, i], data[1][:, i], bins=[xbins, ybins], weights=np.full_like(data[0][:, i], 1.0 / data[0][:, i].size))
             hists.append(hist)
         hist = np.array(hists).mean(axis=0)
-    hist /= hist.sum(axis=1, keepdims=True)
+    if norm_rows:
+        hist /= hist.sum(axis=1, keepdims=True)
     mesh = ax.pcolormesh(x_edges, y_edges, hist.T, norm=mpl.colors.LogNorm(), rasterized=True)
     if showdiag: 
         ax.plot([ranges[0][0], ranges[0][1]], [ranges[1][0], ranges[1][1]], linestyle='dashed', color='black')
