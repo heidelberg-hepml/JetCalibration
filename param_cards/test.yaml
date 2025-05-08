@@ -1,0 +1,36 @@
+run_name: Test
+
+data_params:
+  data_folder: /remote/gpu07/huetsch/JetCalibration/data_v2 #/Ak10Jet_1.npy
+  #n_data: 1000000
+  n_files_train: 20
+  n_files_test: 4
+  target_dims: [0,1]
+
+  target_preprocessor:
+    standardize: True
+  
+  input_preprocessor:
+    log_dims: [0, 1, 5, 6, 8, 11, 19, 20]
+    standardize: True
+
+  loader_params:
+    batch_size: 4096
+    num_workers: 8
+    pin_memory: true
+    shuffle: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+
+model_params:
+  model: MLP_GMM_Regression
+  #model: MLP_Heteroscedastic_Regression
+  n_Gaussians: 5
+  hidden_dim: 256
+  num_layers: 6
+  learning_rate: 0.0005
+
+epochs: 5
+save_predictions: False
+n_samples: 50

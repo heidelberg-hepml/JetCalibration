@@ -45,14 +45,18 @@ import matplotlib.pyplot as plt
 import argparse
 import logging
 
-from Source.dataset import DataModule_Single, DataModule_Full
+import math
+
+from Source.dataset import DataModule_Single
 from Source.model import *
 from Source.util import PrintingCallback
-from Source.plots import Plotter
-
+from Source.plots import Plotter, plot_pred_correlation
 
 # Configure PyTorch and logging settings
-torch.set_float32_matmul_precision('medium')
+# torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 logging.getLogger("lightning_fabric.plugins.environments.slurm").setLevel(logging.ERROR)
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("lightning").setLevel(logging.WARNING)
@@ -122,49 +126,62 @@ def main():
     if data_module_type == "single":
         data_module = DataModule_Single(params["data_params"])
     elif data_module_type == "full":
-        data_module = DataModule_Full(params["data_params"])
+        raise NotImplementedError()
+        # data_module = DataModule_Full(params["data_params"])
     else:
         raise ValueError(f"data_module_type {data_module_type} not recognised")
 
-    # Configure PyTorch Lightning trainer
-    logging.info(f"Creating trainer")
-    printing_callback = PrintingCallback()
-    trainer = pl.Trainer(
-        max_epochs=params.get("epochs", 100),
-        accelerator="gpu", 
-        devices=1, 
-        log_every_n_steps=1,
-        enable_progress_bar=False,
-        callbacks=[
-            pl.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1),
-            printing_callback,
-            pl.callbacks.EarlyStopping(
-                monitor="val_loss",
-                patience=50,
-                verbose=True,
-                mode="min"
-            )
-        ],
-        logger=pl.loggers.TensorBoardLogger(save_dir=run_dir),
-        enable_model_summary=False,
-        num_sanity_val_steps=0,
-        detect_anomaly=False,
-        gradient_clip_val=1.0,
-        gradient_clip_algorithm="norm",
-    )
-
     # Training workflow
     if args.type == "train":
+        # Configure PyTorch Lightning trainer
+        logging.info(f"Creating trainer")
+        printing_callback = PrintingCallback()
+        ckpt_callback: pl.callbacks.ModelCheckpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
+        trainer = pl.Trainer(
+            max_epochs=params.get("epochs", 100),
+            accelerator="gpu", 
+            devices=1, 
+            log_every_n_steps=100,
+            enable_progress_bar=False,
+            callbacks=[
+                ckpt_callback,
+                printing_callback,
+                # pl.callbacks.EarlyStopping(
+                #     monitor="val_loss",
+                #     patience=50,
+                #     verbose=True,
+                #     mode="min"
+                # )
+            ],
+            check_val_every_n_epoch=1,
+            logger=pl.loggers.TensorBoardLogger(save_dir=run_dir),
+            enable_model_summary=False,
+            num_sanity_val_steps=0,
+            detect_anomaly=False,
+            gradient_clip_val=1.0,
+            gradient_clip_algorithm="norm",
+        )
+
         # Create and train model
         logging.info(f"Creating model {params['model_params'].get('model', 'MLP_MSE_Regression')}")
-        model = eval(params["model_params"]["model"])(
+        model: pl.LightningModule = eval(params["model_params"]["model"])(
             input_dim=data_module.input_dim, 
             target_dim=data_module.target_dim, 
             parameters=params["model_params"]
         )
 
+        # I think we need this to use TF32
+        # opt_model: pl.LightningModule = torch.compile(model)
+        opt_model: pl.LightningModule = model
+
+        opt_model.train()
+
         logging.info(f"Training model for {params.get('epochs', 100)} epochs")
-        trainer.fit(model, data_module)
+        trainer.fit(opt_model, data_module)
+        # opt_model.load_from_checkpoint(ckpt_callback.best_model_path)
+        model = eval(params["model_params"]["model"]).load_from_checkpoint(ckpt_callback.best_model_path)
+
+        model.eval()
 
         # Generate predictions on test set
         logging.info(f"Making predictions on test set")
@@ -185,6 +202,8 @@ def main():
         checkpoints = os.listdir(checkpoint_dir)
         checkpoint_path = os.path.join(checkpoint_dir, checkpoints[-1])
         model = eval(params["model_params"]["model"]).load_from_checkpoint(checkpoint_path)
+
+        model.eval()
 
         # Load or generate predictions
         logging.info(f"Loading predictions")
@@ -238,6 +257,21 @@ def main():
             
             samples = torch.stack([samples_E, samples_m], dim=1)
             log_likelihoods = torch.stack([log_likelihoods_E, log_likelihoods_m], dim=1)
+    elif params["model_params"]["model"] == "MLP_Multivariate_GMM_Regression":
+        samples, log_likelihoods = model.sample(
+            test_predictions["mu"], 
+            test_predictions["sigma_inv"], 
+            test_predictions["weights"], 
+            n_samples=params.get("n_samples", 10)
+        )
+        print(f"samples: {samples.shape}")
+        samples[..., 0] = samples[..., 0] * test_predictions["preprocess_std"][0] + test_predictions["preprocess_mean"][0]
+        samples[..., 1] = samples[..., 1] * test_predictions["preprocess_std"][1] + test_predictions["preprocess_mean"][1]
+        log_likelihoods = log_likelihoods/math.prod(test_predictions["preprocess_std"])
+        log_likelihoods = log_likelihoods.unsqueeze(-1).expand(-1, -1, 2)
+
+        samples = samples.permute(0, 2, 1)
+        log_likelihoods = log_likelihoods.permute(0, 2, 1)
     else:
         # Similar sampling logic for non-GMM models
         if len(params["data_params"]["target_dims"]) == 1:
@@ -276,6 +310,14 @@ def main():
     test_inputs = data_module.input_preprocessor.preprocess_backward(test_inputs)
     test_targets = data_module.test_dataset.tensors[1]
     test_targets = data_module.target_preprocessor.preprocess_backward(test_targets)
+
+    os.makedirs(os.path.join(run_dir, "plots_joint"), exist_ok=True)
+    plot_pred_correlation(
+        name="target_correlations.pdf",
+        samples=samples,
+        log_likelihoods=log_likelihoods,
+        plot_dir=os.path.join(run_dir, "plots_joint")
+    )
 
     # Generate plots for each target dimension
     for target_dim in params["data_params"]["target_dims"]:
@@ -317,7 +359,7 @@ def main():
         plotter.r_2d_histogram(f"{variable}_r_2d_histogram.pdf")
         plotter.E_M_2d_histogram(f"{variable}_2d_histogram.pdf")
         plotter.pred_inputs_histogram(f"{variable}_pred_inputs_histogram.pdf")
-        plotter.pred_inputs_histogram_marginalized(f"{variable}_pred_inputs_histogram_marginalized.pdf")
+        # plotter.pred_inputs_histogram_marginalized(f"{variable}_pred_inputs_histogram_marginalized.pdf")
 
         # Additional plots for GMM models
         if params["model_params"]["model"] == "MLP_GMM_Regression":

@@ -58,7 +58,8 @@ class PrintingCallback(Callback):
         Logs epoch number, duration, training loss and validation loss.
         Skips logging for epoch 0.
         """
-        if trainer.current_epoch == 0:
-            return
+        # if trainer.current_epoch == 0:
+        #     return
         end_time = time.time()
         logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds. Training loss: {trainer.callback_metrics['train_loss']:.5f}, Validation loss: {trainer.callback_metrics['val_loss']:.5f}")
+        # logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds.")

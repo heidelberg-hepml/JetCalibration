@@ -616,9 +616,7 @@ class Plotter():
         plt.tight_layout()
         plt.savefig(os.path.join(self.plot_dir, name), format='pdf')
         plt.close(fig)
-
-
-
+    
 def make_hist_1dim_ratio(data, labels, colors, showratios, ratioref, xlabel, rlabel, xrange, ticks=[[], []], logscales=[False, True],
                          nbins=100, integrals=[], legend=['upper right', 0.95, 0.95, None], atlas_info=[0.97, 0.03, 'three-lines', 'right', 'bottom', 'none'], switch_legend=False):
 
@@ -753,3 +751,49 @@ def make_hist_2dim(data, labels, ranges, ticks=[[], []], logscales=[False, False
     if len(ticks[1]) > 0: ax.set_yticks(ticks[1])
 
     return fig, ax
+
+
+def plot_pred_correlation(name, samples, log_likelihoods, plot_dir):
+    samples_E = samples[:, 0]
+    samples_m = samples[:, 1]
+
+    logR_pred_MC_E = samples_E.reshape(-1)
+    logR_pred_mean_E = samples_E.mean(axis=1)
+    logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
+
+    logR_pred_MC_m = samples_m.reshape(-1)
+    logR_pred_mean_m = samples_m.mean(axis=1)
+    logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
+
+    min_values_E = min(logR_pred_MC_E.tolist())
+    max_values_E = max(logR_pred_MC_E.tolist())
+    min_values_m = min(logR_pred_MC_m.tolist())
+    max_values_m = max(logR_pred_MC_m.tolist())
+
+    with PdfPages(os.path.join(plot_dir, name)) as pdf:
+        for (target_data_E, target_data_m), plot_title in zip(
+            [
+                (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+            ],
+            [
+                "MC", "Median", "Max"
+            ]
+        ):
+            # print(plot_title)
+            # print(target_data_E)
+            # print(target_data_m)
+            # print()
+
+            fig, axs = make_hist_2dim(
+                data=[target_data_E.numpy(), target_data_m.numpy()],
+                labels=[r"$\text{log}_{10} r_E$", r"$\text{log}_{10} r_m$"],
+                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                showdiag=False,
+                nbins=[100,100],
+                norm_rows=False
+            )
+            # fig.suptitle(plot_title)
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+    

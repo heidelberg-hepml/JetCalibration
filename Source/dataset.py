@@ -114,7 +114,7 @@ class DataModule_Single(pl.LightningDataModule):
 
         # Create train/val split
         train_val_split = int(0.9 * len(inputs_train))
-        logging.info(f"Train size: {train_val_split}, Val size: {len(inputs_train) - train_val_split}, Test size: {len(inputs_test)}")
+        logging.info(f"Train size: {train_val_split:,}, Val size: {len(inputs_train) - train_val_split:,}, Test size: {len(inputs_test):,}")
 
         self.train_dataset = TensorDataset(inputs_train[:train_val_split], targets_train[:train_val_split])
         self.val_dataset = TensorDataset(inputs_train[train_val_split:], targets_train[train_val_split:])

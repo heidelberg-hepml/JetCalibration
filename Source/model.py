@@ -75,29 +75,34 @@ class BaseModel(pl.LightningModule):
         x, y = batch
         y_pred = self(x)
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
-        self.train_loss.append(loss.item())
+        self.train_loss.append(loss.detach())
         self.log("train_loss", loss, on_step=True, on_epoch=True)
         return loss 
 
+    @torch.inference_mode()
     def validation_step(self, batch, batch_idx):
         """Single validation step"""
         x, y = batch
         y_pred = self(x)
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
-        self.val_loss.append(loss.item())
+        self.val_loss.append(loss.detach())
         self.log("val_loss", loss, on_step=True, on_epoch=True)
         return loss 
 
+    @torch.inference_mode()
     def on_train_epoch_end(self):
         """Compute and store average training loss for epoch"""
-        epoch_loss = torch.tensor(self.train_loss).mean()
+        epoch_loss = torch.stack(self.train_loss).mean()
         self.train_epoch_losses.append(epoch_loss.item())
+        self.log("train_loss",  self.train_epoch_losses[-1], on_step=False, on_epoch=True)
         self.train_loss = []
 
+    @torch.inference_mode()
     def on_validation_epoch_end(self):
         """Compute and store average validation loss for epoch"""
-        epoch_loss = torch.tensor(self.val_loss).mean()
+        epoch_loss = torch.stack(self.val_loss).mean()
         self.val_epoch_losses.append(epoch_loss.item())
+        self.log("val_loss", self.val_epoch_losses[-1], on_step=False, on_epoch=True)
         self.val_loss = []
 
     def on_save_checkpoint(self, checkpoint):
@@ -132,7 +137,6 @@ class MLP_MSE_Regression(BaseModel):
         x, y = batch
         y_pred = self(x)
         return {'mu': y_pred.squeeze()}
-
 
 class MLP_Heteroscedastic_Regression(BaseModel):
     """
@@ -186,6 +190,89 @@ class MLP_Heteroscedastic_Regression(BaseModel):
         
         return samples, log_likelihoods
 
+class MLP_MultivariatHeteroscedastic_Regression(BaseModel):
+    """
+    MLP model predicting both mean and variance for a multivariat distribution.
+
+    Implements heteroscedastic regression by outputting both predicted value
+    and estimated uncertainty.
+
+    Args:
+        input_dim (int): Input feature dimension
+        target_dim (int): Target variable dimension
+        parameters (dict): Model configuration parameters
+    """
+    def __init__(self, input_dim, target_dim, parameters):
+        super().__init__(input_dim, target_dim, parameters)
+
+        self._index_diag = torch.arange(0, target_dim)
+        self._index_off_diag_0, self._index_off_diag_1 = torch.tril_indices(target_dim, target_dim, -1)
+
+        self.register_buffer("sigma_scale", (1. / torch.sqrt(0.25 * torch.arange(1, target_dim + 1, dtype=torch.float32))).unsqueeze(-1))
+
+        output_dim = target_dim + (target_dim + 1) * target_dim // 2
+        self.model = MLP(input_dim, output_dim, self.params['hidden_dim'], self.params['num_layers'])
+
+    def loss_fn(self, y_pred, y):
+        """Compute negative log likelihood loss"""
+        mu_pred = y[...,:self.target_dim].clone()
+
+        sigmas_diag = y[...,self.target_dim:2*self.target_dim].clone()
+        sigmas_off_diag = y[...,2*self.target_dim:].clone()
+
+        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+
+        _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
+        _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
+        _sigmas[..., self._index_off_diag_0, self._index_off_diag_1] = sigmas_off_diag
+        _sigmas = _sigmas * self.sigma_scale
+
+        _diag = torch.diagonal(_sigmas, 0, -2, -1)
+        # _logdet = torch.nn.functional.softplus(torch.prod(_diag, dim=-1), beta=1.0e4) # diag is 1 / (sigma_1 * sigma_2 * ...) with sigma_i < 1
+        _logdet = torch.prod(_diag, dim=-1)
+        _logdet = torch.log(_logdet)
+
+        sigmas = torch.matmul(_sigmas, _sigmas.transpose(-2, -1))
+
+        _diff = mu_pred - y
+        _diff2 = torch.matmul(sigmas, _diff.unsqueeze(-1)).squeeze(-1)
+
+        loss = 0.5 * torch.sum(_diff * _diff2, dim=-1) - _logdet
+        loss = torch.mean(loss)
+
+        return loss
+
+    def predict_step(self, batch, batch_idx):
+        """Generate predictions with uncertainties"""
+        x, y = batch
+        y_pred = self(x)
+        
+        mu_pred = y_pred[:, :self.target_dim]
+        
+        sigmas_diag = y[...,self.target_dim:2*self.target_dim].clone()
+        sigmas_off_diag = y[...,2*self.target_dim:].clone()
+
+        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+
+        _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
+        _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
+        _sigmas[..., self._index_off_diag_0, self._index_off_diag_1] = sigmas_off_diag
+        _sigmas = _sigmas * self.sigma_scale
+
+        sigmas = torch.matmul(_sigmas, _sigmas.transpose(-2, -1))
+            
+        return { 'mu': mu_pred, 'sigma_inv': sigmas } 
+    
+    def sample(self, mu_pred, sigma_pred, n_samples=1):
+        """Draw samples from predicted distribution"""
+        batch_size = mu_pred.shape[0]
+
+        multivariat_normal_dist = dist.MultivariateNormal(loc=mu_pred, precision_matrix=sigma_pred)
+
+        samples = multivariat_normal_dist.sample((n_samples,))
+        log_likelihoods = multivariat_normal_dist.log_prob(samples)
+        
+        return samples.permute(1, 2, 0), log_likelihoods.permute(1, 0)
 
 class MLP_GMM_Regression(BaseModel):
     """
@@ -306,3 +393,132 @@ class MLP_GMM_Regression(BaseModel):
         log_likelihoods = log_categorical_probs + log_gaussian_likelihoods  # (batch, n_samples)
 
         return samples, log_likelihoods
+
+class MLP_Multivariate_GMM_Regression(BaseModel):
+    """
+    MLP model predicting multivariat Gaussian mixture model parameters.
+
+    Implements regression using a mixture of Gaussians to capture
+    multi-modal distributions.
+
+    Args:
+        input_dim (int): Input feature dimension
+        target_dim (int): Target variable dimension
+        parameters (dict): Model configuration parameters including n_Gaussians
+    """
+    def __init__(self, input_dim, target_dim, parameters):
+        super().__init__(input_dim, target_dim, parameters)
+        self.n_Gaussians = parameters['n_Gaussians']
+
+        self._index_diag = torch.arange(0, target_dim)
+        self._index_off_diag_0, self._index_off_diag_1 = torch.tril_indices(target_dim, target_dim, -1)
+
+        self.register_buffer("sigma_scale", (1. / torch.sqrt(torch.arange(1, target_dim + 1, dtype=torch.float32))).unsqueeze(-1))
+
+        self.output_dim_per_mode = target_dim + (target_dim + 1) * target_dim // 2
+        # print(f"self.output_dim_per_mode: {self.output_dim_per_mode}")
+        self.model = MLP(
+            input_dim=input_dim,
+            output_dim=(self.output_dim_per_mode + 1) * self.n_Gaussians,
+            hidden_dim=self.params['hidden_dim'],
+            num_layers=self.params['num_layers'],
+            drop=parameters.get("drop", 0.)
+        )
+        
+    def loss_fn(self, y_pred: torch.FloatTensor, y: torch.FloatTensor):
+        """Compute negative log likelihood loss for mixture model"""
+
+        # print(f"y_pred: {y_pred.shape}")
+
+        weights = y_pred[...,:self.n_Gaussians].clone()
+        y_pred = y_pred[...,self.n_Gaussians:].clone()
+
+        y_pred = y_pred.reshape(-1, self.n_Gaussians, self.output_dim_per_mode)
+        y = y.unsqueeze(-2).expand(-1, self.n_Gaussians, -1)
+
+        mu_pred = y_pred[...,:self.target_dim].clone()
+
+        sigmas_diag = y_pred[...,self.target_dim:2*self.target_dim].clone()
+        sigmas_off_diag = y_pred[...,2*self.target_dim:].clone()
+
+        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+
+        _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
+        _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
+        _sigmas[..., self._index_off_diag_0, self._index_off_diag_1] = sigmas_off_diag
+        _sigmas = _sigmas * self.sigma_scale
+
+        _diag = torch.diagonal(_sigmas, 0, -2, -1)
+        # _logdet = torch.nn.functional.softplus(torch.prod(_diag, dim=-1), beta=1.0e4) # diag is 1 / (sigma_1 * sigma_2 * ...) with sigma_i < 1
+        _logdet = torch.prod(_diag, dim=-1)
+        _logdet = torch.log(_logdet)
+
+        sigmas = torch.matmul(_sigmas, _sigmas.transpose(-2, -1))
+
+        _diff = mu_pred - y
+        _diff2 = torch.matmul(sigmas, _diff.unsqueeze(-1)).squeeze(-1)
+
+        _log_prob_mix = torch.log_softmax(weights, dim=-1)
+        _log_prob_gaus = -0.5 * torch.sum(_diff * _diff2, dim=-1) + _logdet
+        
+        loss = -torch.logsumexp(_log_prob_mix + _log_prob_gaus, dim=-1)
+        loss = torch.mean(loss)
+        return loss
+    
+    def predict_step(self, batch, batch_idx):
+        """Generate predictions for mixture model components"""
+        x, y = batch
+        y_pred = self(x)
+        
+        weights = y_pred[...,:self.n_Gaussians].clone()
+        weights = torch.nn.functional.softmax(weights, dim=-1)
+
+        y_pred = y_pred[...,self.n_Gaussians:].clone()
+
+        y_pred = y_pred.reshape(-1, self.n_Gaussians, self.output_dim_per_mode)
+
+        mu_pred = y_pred[...,:self.target_dim].clone()
+
+        sigmas_diag = y_pred[...,self.target_dim:2*self.target_dim].clone()
+        sigmas_off_diag = y_pred[...,2*self.target_dim:].clone()
+
+        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+
+        _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
+        _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
+        _sigmas[..., self._index_off_diag_0, self._index_off_diag_1] = sigmas_off_diag
+        _sigmas = _sigmas * self.sigma_scale
+
+        sigmas = torch.matmul(_sigmas, _sigmas.transpose(-2, -1))
+
+        return {
+            "mu": mu_pred,
+            "sigma_inv": sigmas,
+            "weights": weights
+        }
+            
+    def sample(self, mu_pred, sigma_pred, weights_pred, n_samples=1):
+        """Draw samples from mixture model distribution"""
+        batch_size, num_components = weights_pred.shape  # Shape (batch, num_components)
+
+        # Step 2: Sample component indices per batch element
+        categorical_dist = dist.Categorical(weights_pred)  # Batch-wise categorical distribution
+        _gaussian_choices = categorical_dist.sample((n_samples,))  # (n_samples, batch)
+        gaussian_choices = _gaussian_choices.reshape(-1)
+        batch_indices = torch.arange(batch_size).unsqueeze(0).expand(n_samples, -1).reshape(-1)
+
+        # Step 3: Gather selected means and variances
+        selected_means = mu_pred[batch_indices, gaussian_choices].reshape(n_samples, batch_size, -1).permute(1,0,2)  # (batch, n_samples)
+        selected_sigmas = sigma_pred[batch_indices, gaussian_choices].reshape(n_samples, batch_size, *sigma_pred.shape[2:]).permute(1,0,2,3)  # (batch, n_samples, target_dim, target_dim)
+
+        # Step 4: Sample from selected Gaussian distributions
+        normal_dist = dist.MultivariateNormal(selected_means, precision_matrix=selected_sigmas)  
+        samples = normal_dist.sample()  # (batch, n_samples)
+
+        # Step 5: Compute log likelihoods
+        log_categorical_probs = categorical_dist.log_prob(_gaussian_choices).permute(1, 0)  # (batch, n_samples)
+        log_gaussian_likelihoods = normal_dist.log_prob(samples)  # (batch, n_samples)
+        log_likelihoods = log_categorical_probs + log_gaussian_likelihoods  # (batch, n_samples)
+
+        return samples, log_likelihoods
+    
