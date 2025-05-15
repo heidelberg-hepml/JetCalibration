@@ -119,6 +119,7 @@ class DataModule_Single(pl.LightningDataModule):
         self.train_dataset = TensorDataset(inputs_train[:train_val_split], targets_train[:train_val_split])
         self.val_dataset = TensorDataset(inputs_train[train_val_split:], targets_train[train_val_split:])
         self.test_dataset = TensorDataset(inputs_test, targets_test)
+        # self.test_dataset = self.train_dataset
 
     def train_dataloader(self):
         """Creates DataLoader for training data"""

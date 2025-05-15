@@ -1,4 +1,4 @@
-run_name: TestLarge
+run_name: TestLarge2
 
 data_params:
   data_folder: /remote/gpu07/huetsch/JetCalibration/data_v2 #/Ak10Jet_1.npy
@@ -24,7 +24,7 @@ data_params:
 
 model_params:
   model: MLP_Multivariate_GMM_Regression
-  n_Gaussians: 5
+  n_Gaussians: 10
   hidden_dim: 512
   num_layers: 8
   drop: 0.3

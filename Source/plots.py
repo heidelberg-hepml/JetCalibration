@@ -41,6 +41,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import logging
 from scipy.stats import binned_statistic
 
+import torch
+
 from Source.plot_utils import *
 plt.style.use('/remote/gpu07/huetsch/JetCalibration/Source/plotting.mplstyle')
 
@@ -753,30 +755,40 @@ def make_hist_2dim(data, labels, ranges, ticks=[[], []], logscales=[False, False
     return fig, ax
 
 
-def plot_pred_correlation(name, samples, log_likelihoods, plot_dir):
+def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir):
+    logging.info(f"targets: {targets}")
+
     samples_E = samples[:, 0]
     samples_m = samples[:, 1]
 
     logR_pred_MC_E = samples_E.reshape(-1)
-    logR_pred_mean_E = samples_E.mean(axis=1)
+    logR_pred_mean_E, _ = samples_E.median(dim=1)
     logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
 
     logR_pred_MC_m = samples_m.reshape(-1)
-    logR_pred_mean_m = samples_m.mean(axis=1)
+    logR_pred_mean_m, _ = samples_m.median(dim=1)
     logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
 
-    min_values_E = min(logR_pred_MC_E.tolist())
-    max_values_E = max(logR_pred_MC_E.tolist())
-    min_values_m = min(logR_pred_MC_m.tolist())
-    max_values_m = max(logR_pred_MC_m.tolist())
+    targets_E = targets[:, 0]
+    targets_m = targets[:, 1]
+
+    # min_values_E = min(min(logR_pred_MC_E.tolist()), min(targets_E.tolist()))
+    # max_values_E = max(max(logR_pred_MC_E.tolist()), max(targets_E.tolist()))
+    # min_values_m = min(min(logR_pred_MC_m.tolist()), min(targets_m.tolist()))
+    # max_values_m = max(max(logR_pred_MC_m.tolist()), max(targets_m.tolist()))
+
+    min_values_E = min(targets_E.tolist())
+    max_values_E = max(targets_E.tolist())
+    min_values_m = min(targets_m.tolist())
+    max_values_m = max(targets_m.tolist())
 
     with PdfPages(os.path.join(plot_dir, name)) as pdf:
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
             ],
             [
-                "MC", "Median", "Max"
+                "Truth", "MC", "Median", "Max"
             ]
         ):
             # print(plot_title)
@@ -792,8 +804,109 @@ def plot_pred_correlation(name, samples, log_likelihoods, plot_dir):
                 nbins=[100,100],
                 norm_rows=False
             )
-            # fig.suptitle(plot_title)
+            fig.suptitle(plot_title, y=0.9)
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
-    
+
+def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihoods, plot_dir):
+    targets = 10.**targets
+
+    # logging.info(f"samples: {samples.shape}")
+    # logging.info(f"input_data: {input_data.shape}")
+
+    # logging.info(f"samples: {samples}")
+    # logging.info(f"input_data: {input_data}")
+
+    r: torch.FloatTensor = 10**samples
+    # logging.info(f"r: {r}")
+
+    input_data: torch.FloatTensor = input_data[:, :2]
+    # logging.info(f"input_data: {input_data}")
+
+    # input_data = 10**input_data
+    # logging.info(f"input_data: {input_data}")
+
+    targets = input_data / targets
+    targets = torch.log10(targets)
+
+    input_data = input_data.unsqueeze(-1).expand(-1, -1, r.size(-1))
+    # logging.info(f"input_data: {input_data.shape}")
+    samples = input_data / r
+    # logging.info(f"samples: {samples}")
+    samples = torch.log10(samples)
+    # logging.info(f"samples: {samples.shape}")
+
+    # logging.info(f"samples: {samples}")
+
+    samples_E = samples[:, 0]
+    samples_m = samples[:, 1]
+
+    logR_pred_MC_E = samples_E.reshape(-1)
+    logR_pred_mean_E, _ = samples_E.median(dim=1)
+    logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
+
+    logR_pred_MC_m = samples_m.reshape(-1)
+    logR_pred_mean_m, _ = samples_m.median(dim=1)
+    logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
+
+    targets_E = targets[:, 0]
+    targets_m = targets[:, 1]
+
+    # min_values_E = min(min(logR_pred_MC_E.tolist()), min(targets_E.tolist()))
+    # max_values_E = max(max(logR_pred_MC_E.tolist()), max(targets_E.tolist()))
+    # min_values_m = min(min(logR_pred_MC_m.tolist()), min(targets_m.tolist()))
+    # max_values_m = max(max(logR_pred_MC_m.tolist()), max(targets_m.tolist()))
+
+    min_values_E = min(targets_E.tolist())
+    max_values_E = max(targets_E.tolist())
+    min_values_m = min(targets_m.tolist())
+    max_values_m = max(targets_m.tolist())
+
+    with PdfPages(os.path.join(plot_dir, name)) as pdf:
+        for (target_data_E, target_data_m), plot_title in zip(
+            [
+                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+            ],
+            [
+                "Truth", "MC", "Median", "Mode"
+            ]
+        ):
+            # logging.info(f"plotting: {plot_title}")
+
+            # logging.info(f"target_data_E: {target_data_E.shape}")
+            # logging.info(f"target_data_m: {target_data_m.shape}")
+
+            # logging.info(f"target_data_E: {target_data_E}")
+            # logging.info(f"target_data_m: {target_data_m}")
+
+            # print(plot_title)
+            # print(target_data_E)
+            # print(target_data_m)
+            # print()
+
+            fig, axs = make_hist_2dim(
+                data=[target_data_E.numpy(), target_data_m.numpy()],
+                labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
+                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                showdiag=False,
+                nbins=[100,100],
+                norm_rows=False
+            )
+            fig.suptitle(plot_title, y=0.9)
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+        
+            fig, axs = make_hist_2dim(
+                data=[10.**(target_data_E.numpy()), 10.**(target_data_m.numpy())],
+                labels=[r"$\text{Jet energy } E$", r"$\text{Jet mass } m$"],
+                ranges=[[10.**min_values_E, 10.**max_values_E], [10.**min_values_m, 10.**max_values_m]],
+                showdiag=False,
+                nbins=[100,100],
+                norm_rows=False
+            )
+            fig.suptitle(plot_title, y=0.9)
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)

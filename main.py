@@ -50,7 +50,7 @@ import math
 from Source.dataset import DataModule_Single
 from Source.model import *
 from Source.util import PrintingCallback
-from Source.plots import Plotter, plot_pred_correlation
+from Source.plots import Plotter, plot_pred_correlation, plot_pred_jet_correlation
 
 # Configure PyTorch and logging settings
 # torch.set_float32_matmul_precision('medium')
@@ -131,37 +131,39 @@ def main():
     else:
         raise ValueError(f"data_module_type {data_module_type} not recognised")
 
+    # Configure PyTorch Lightning trainer
+    logging.info(f"Creating trainer")
+    printing_callback = PrintingCallback()
+    ckpt_callback: pl.callbacks.ModelCheckpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
+    lr_callback = pl.callbacks.LearningRateMonitor(logging_interval="step")
+    trainer = pl.Trainer(
+        max_epochs=params.get("epochs", 100),
+        accelerator="gpu", 
+        devices=1, 
+        log_every_n_steps=100,
+        enable_progress_bar=False,
+        callbacks=[
+            ckpt_callback,
+            printing_callback,
+            lr_callback,
+            # pl.callbacks.EarlyStopping(
+            #     monitor="val_loss",
+            #     patience=50,
+            #     verbose=True,
+            #     mode="min"
+            # )
+        ],
+        check_val_every_n_epoch=1,
+        logger=pl.loggers.TensorBoardLogger(save_dir=run_dir),
+        enable_model_summary=False,
+        num_sanity_val_steps=0,
+        detect_anomaly=False,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
+    )
+
     # Training workflow
     if args.type == "train":
-        # Configure PyTorch Lightning trainer
-        logging.info(f"Creating trainer")
-        printing_callback = PrintingCallback()
-        ckpt_callback: pl.callbacks.ModelCheckpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
-        trainer = pl.Trainer(
-            max_epochs=params.get("epochs", 100),
-            accelerator="gpu", 
-            devices=1, 
-            log_every_n_steps=100,
-            enable_progress_bar=False,
-            callbacks=[
-                ckpt_callback,
-                printing_callback,
-                # pl.callbacks.EarlyStopping(
-                #     monitor="val_loss",
-                #     patience=50,
-                #     verbose=True,
-                #     mode="min"
-                # )
-            ],
-            check_val_every_n_epoch=1,
-            logger=pl.loggers.TensorBoardLogger(save_dir=run_dir),
-            enable_model_summary=False,
-            num_sanity_val_steps=0,
-            detect_anomaly=False,
-            gradient_clip_val=1.0,
-            gradient_clip_algorithm="norm",
-        )
-
         # Create and train model
         logging.info(f"Creating model {params['model_params'].get('model', 'MLP_MSE_Regression')}")
         model: pl.LightningModule = eval(params["model_params"]["model"])(
@@ -311,10 +313,21 @@ def main():
     test_targets = data_module.test_dataset.tensors[1]
     test_targets = data_module.target_preprocessor.preprocess_backward(test_targets)
 
+    logging.info("Plotting joint plots")
+
     os.makedirs(os.path.join(run_dir, "plots_joint"), exist_ok=True)
     plot_pred_correlation(
         name="target_correlations.pdf",
+        targets=test_targets,
         samples=samples,
+        log_likelihoods=log_likelihoods,
+        plot_dir=os.path.join(run_dir, "plots_joint")
+    )
+    plot_pred_jet_correlation(
+        name="jet_correlations.pdf",
+        targets=test_targets,
+        samples=samples,
+        input_data=test_inputs,
         log_likelihoods=log_likelihoods,
         plot_dir=os.path.join(run_dir, "plots_joint")
     )
@@ -330,7 +343,7 @@ def main():
         if len(params["data_params"]["target_dims"]) == 1:
             plotter = Plotter(
                 plot_dir, 
-                params, 
+                params,
                 test_predictions, 
                 test_inputs, 
                 test_targets, 

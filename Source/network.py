@@ -30,7 +30,8 @@ def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
     for _ in range(num_layers):
         layers.append(nn.Linear(input_dim, hidden_dim))
         layers.append(nn.ReLU())
-        layers.append(nn.Dropout(drop))
+        if drop != 0.:
+            layers.append(nn.Dropout(drop))
         input_dim = hidden_dim
     layers.append(nn.Linear(hidden_dim, output_dim))
     return nn.Sequential(*layers)

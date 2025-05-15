@@ -58,8 +58,22 @@ class BaseModel(pl.LightningModule):
     
     def configure_optimizers(self):
         """Setup optimizer and learning rate scheduler"""
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.params.get('learning_rate', 0.001))
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        optimizer = torch.optim.Adam(
+            self.parameters(),
+            lr=self.params.get('learning_rate', 0.001),
+            weight_decay=self.params.get('weight_decay', 0.)
+        )
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.1)
+        if lr_sheduler_factor == 1.0:
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
+        else:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=self.params.get('lr_sheduler_factor', 0.1),
+                patience=self.params.get('lr_sheduler_patience', 10)
+            )
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -441,17 +455,19 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
         sigmas_diag = y_pred[...,self.target_dim:2*self.target_dim].clone()
         sigmas_off_diag = y_pred[...,2*self.target_dim:].clone()
 
-        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+        # sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+        sigmas_diag = sigmas_diag.clamp(min=-10., max=10.)
+        _logdet = torch.sum(sigmas_diag, dim=-1)
+        sigmas_diag = torch.exp(sigmas_diag)
 
         _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
         _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
         _sigmas[..., self._index_off_diag_0, self._index_off_diag_1] = sigmas_off_diag
         _sigmas = _sigmas * self.sigma_scale
 
-        _diag = torch.diagonal(_sigmas, 0, -2, -1)
-        # _logdet = torch.nn.functional.softplus(torch.prod(_diag, dim=-1), beta=1.0e4) # diag is 1 / (sigma_1 * sigma_2 * ...) with sigma_i < 1
-        _logdet = torch.prod(_diag, dim=-1)
-        _logdet = torch.log(_logdet)
+        # _diag = torch.diagonal(_sigmas, 0, -2, -1)
+        # _logdet = torch.prod(_diag, dim=-1)
+        # _logdet = torch.log(_logdet)
 
         sigmas = torch.matmul(_sigmas, _sigmas.transpose(-2, -1))
 
@@ -482,7 +498,9 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
         sigmas_diag = y_pred[...,self.target_dim:2*self.target_dim].clone()
         sigmas_off_diag = y_pred[...,2*self.target_dim:].clone()
 
-        sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+        # sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
+        sigmas_diag = sigmas_diag.clamp(min=-10., max=10.)
+        sigmas_diag = torch.exp(sigmas_diag)
 
         _sigmas = torch.zeros(*mu_pred.shape[:-1], self.target_dim, self.target_dim, dtype=sigmas_diag.dtype, device=sigmas_diag.device)
         _sigmas[..., self._index_diag, self._index_diag] = sigmas_diag
