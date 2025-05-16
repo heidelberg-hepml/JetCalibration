@@ -539,4 +539,60 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
         log_likelihoods = log_categorical_probs + log_gaussian_likelihoods  # (batch, n_samples)
 
         return samples, log_likelihoods
-    
+
+
+class MLP_CFM(BaseModel):
+
+    def __init__(self, input_dim, target_dim, parameters):
+        super().__init__(input_dim, target_dim, parameters)
+        self.model = MLP(input_dim+target_dim+1, input_dim, self.params['hidden_dim'], self.params['num_layers'])
+        self.loss_fn = nn.MSELoss()
+
+
+    def training_step(self, batch, batch_idx):
+        """Single training step"""
+        x, y = batch
+        noise = torch.randn_like(y)
+        t = torch.rand(y.shape[0], 1,device=y.device)
+        y_t = (1 - t) * noise + t * y
+        y_t_dot = y - noise
+        v_pred = self(torch.cat([t, y_t, x], dim=-1))
+        loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
+        self.train_loss.append(loss.item())
+        self.log("train_loss", loss, on_step=True, on_epoch=True)
+        return loss 
+
+    def validation_step(self, batch, batch_idx):
+        """Single validation step"""
+        x, y = batch
+        noise = torch.randn_like(y)
+        t = torch.rand(y.shape[0], 1,device=y.device)
+        y_t = (1 - t) * noise + t * y
+        y_t_dot = y - noise
+        v_pred = self(torch.cat([t, y_t, x], dim=-1))
+        loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
+        self.val_loss.append(loss.item())
+        self.log("val_loss", loss, on_step=True, on_epoch=True)
+        return loss 
+
+        
+    def predict_step(self, batch, batch_idx):
+        x, y = batch
+
+        batch_size = x.shape[0]
+        dtype = x.dtype
+        device = x.device
+
+        def net_wrapper(t, y_t):
+            t = t * torch.ones_like(y_t[:, [0]], dtype=dtype, device=device)
+            v = self(torch.cat([t, y_t, x], dim=-1))
+            return v
+        
+        noise = torch.randn_like(y)
+        y_t = odeint(func=net_wrapper, 
+                     y0=noise,
+                     t=torch.tensor([0, 1], device=device, dtype=dtype),
+                     rtol=1e-5,
+                     atol=1e-7,
+                     method='dopri5')
+        return y_t[-1]
