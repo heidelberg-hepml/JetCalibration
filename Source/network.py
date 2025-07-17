@@ -26,6 +26,7 @@ def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
             - ReLU activation
         - Output layer: Linear transformation to output_dim neurons
     """
+
     layers = []
     for _ in range(num_layers):
         layers.append(nn.Linear(input_dim, hidden_dim))
@@ -35,5 +36,48 @@ def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
         input_dim = hidden_dim
     layers.append(nn.Linear(hidden_dim, output_dim))
     return nn.Sequential(*layers)
+
+class ResLayer(nn.Module):
+    def __init__(self, hidden_dim, interm_dim, drop=0.):
+        super().__init__()
+
+        layers = []
+        if drop != 0.:
+            layers.append(nn.Dropout(drop))
+        layers += [
+            nn.Linear(hidden_dim, interm_dim),
+            nn.SiLU()
+        ]
+        if drop != 0.:
+            layers.append(nn.Dropout(drop))
+        layers += [
+            nn.Linear(interm_dim, hidden_dim),
+            nn.SiLU()
+        ]
+
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
+        return x + self.mlp(x)
+
+class ResMLP(nn.Module):
+    def __init__(self, input_dim, output_dim, hidden_dim, interm_dim, num_layers, drop=0.):
+        super().__init__()
+
+        layers = []
+
+        layers.append(nn.Linear(input_dim, hidden_dim))
+        layers.append(nn.SiLU())
+        for _ in range(num_layers):
+            layers.append(ResLayer(hidden_dim, interm_dim, drop))
+        layers.append(nn.Linear(hidden_dim, output_dim))
+
+        self.res_mlp = nn.Sequential(*layers)
+
+    def forward(self, x:torch.FloatTensor) -> torch.FloatTensor:
+        return self.res_mlp(x)
+    
+
+
 
 

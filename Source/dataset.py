@@ -22,6 +22,42 @@ import os
 from torch.utils.data import random_split, TensorDataset, Dataset
 import logging
 
+import ot
+
+@torch.no_grad()
+def _cfm_ot_collate_fct(examples):
+    x, y = torch.utils.data.default_collate(examples)
+    noise = torch.randn_like(y)
+
+    batch_size = x.shape[0]
+
+    cost = torch.cdist(noise, y)
+    a, b = ot.unif(batch_size), ot.unif(batch_size)
+    p = ot.emd(a, b, cost.cpu().numpy())
+    if not np.all(np.isfinite(p)):
+        logging.error(
+            f"""ERROR: p is not finite"
+            p: {p}
+            Cost mean {cost.mean()}, cost max {cost.max()}
+            noise: {noise}
+            y: {y}
+            """)
+    if np.abs(p.sum()) < 1e-8:
+        logging.warning("Numerical errors in OT plan, reverting to uniform plan.")
+        p = np.ones_like(p) / p.size
+
+    _p = p.flatten()
+    _p = _p / _p.sum()
+    choices = np.random.choice(
+        p.shape[0] * p.shape[1], p=_p, size=batch_size, replace=True
+    )
+    i, j = np.divmod(choices, p.shape[1])
+    
+    noise_ot = noise[i]
+    x_ot= x[j]
+    y_ot = y[j]
+
+    return x_ot, y_ot, noise_ot
 
 class DataModule_Single(pl.LightningDataModule):
     """
@@ -58,6 +94,8 @@ class DataModule_Single(pl.LightningDataModule):
 
         train_files = data_paths[:n_files_train]
         test_files = data_paths[-n_files_test:]
+
+        logging.info(f"Train files: {len(train_files)}, test files: {len(test_files)}")
 
         # Load training data
         targets_train = []
@@ -99,8 +137,17 @@ class DataModule_Single(pl.LightningDataModule):
         inputs_test = torch.from_numpy(inputs_test)
         
         # Initialize preprocessors
-        self.input_preprocessor = InputPreprocessor(data_params["input_preprocessor"])
+        self.input_preprocessor = InputPreprocessor(data_params["input_preprocessor"], skip_dims=data_params.get("skip_dims", []))
         self.target_preprocessor = TargetPreprocessor(data_params["target_preprocessor"])
+
+        _input_dim = inputs_train.shape[1]
+        keep_dims = torch.full((_input_dim,), True, dtype=torch.bool)
+        keep_dims[data_params.get("skip_dims", [])] = False
+        inputs_train = inputs_train[:, keep_dims]
+        inputs_test = inputs_test[:, keep_dims]
+
+        self.input_dim = inputs_train.shape[1]
+        self.target_dim = len(data_params["target_dims"])
 
         # Preprocess data
         inputs_train = self.input_preprocessor.preprocess_forward(inputs_train)
@@ -109,9 +156,6 @@ class DataModule_Single(pl.LightningDataModule):
         inputs_test = self.input_preprocessor.preprocess_forward(inputs_test)
         targets_test = self.target_preprocessor.preprocess_forward(targets_test)
 
-        self.input_dim = inputs_train.shape[1]
-        self.target_dim = len(data_params["target_dims"])
-
         # Create train/val split
         train_val_split = int(0.9 * len(inputs_train))
         logging.info(f"Train size: {train_val_split:,}, Val size: {len(inputs_train) - train_val_split:,}, Test size: {len(inputs_test):,}")
@@ -119,7 +163,6 @@ class DataModule_Single(pl.LightningDataModule):
         self.train_dataset = TensorDataset(inputs_train[:train_val_split], targets_train[:train_val_split])
         self.val_dataset = TensorDataset(inputs_train[train_val_split:], targets_train[train_val_split:])
         self.test_dataset = TensorDataset(inputs_test, targets_test)
-        # self.test_dataset = self.train_dataset
 
     def train_dataloader(self):
         """Creates DataLoader for training data"""
@@ -128,7 +171,18 @@ class DataModule_Single(pl.LightningDataModule):
         pin_memory = self.loader_params["pin_memory"]
         shuffle = self.loader_params["shuffle"]
         persistent_workers = self.loader_params["persistent_workers"]
-        return DataLoader(self.train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+
+        cfm_ot = self.loader_params.get("cfm_ot", False)
+
+        return DataLoader(
+            self.train_dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            collate_fn=_cfm_ot_collate_fct if cfm_ot else None
+        )
 
     def val_dataloader(self):
         """Creates DataLoader for validation data"""
@@ -136,15 +190,33 @@ class DataModule_Single(pl.LightningDataModule):
         num_workers = self.loader_params["num_workers"]
         pin_memory = self.loader_params["pin_memory"]
         persistent_workers = self.loader_params["persistent_workers"]
-        return DataLoader(self.val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+
+        cfm_ot = self.loader_params.get("cfm_ot", False)
+
+        return DataLoader(
+            self.val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            collate_fn=_cfm_ot_collate_fct if cfm_ot else None
+        )
     
     def test_dataloader(self):
         """Creates DataLoader for test data"""
-        batch_size = self.loader_params["batch_size"]
+        batch_size = self.loader_params.get("test_batch_size", self.loader_params["batch_size"])
         num_workers = self.loader_params["num_workers"]
         pin_memory = self.loader_params["pin_memory"]
         persistent_workers = self.loader_params["persistent_workers"]
-        return DataLoader(self.test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+        return DataLoader(
+            self.test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers
+        )
     
 
 class TargetPreprocessor():
@@ -185,18 +257,35 @@ class InputPreprocessor():
         params (dict): Configuration parameters:
             - log_dims: List of indices for dimensions to log transform
     """
-    def __init__(self, params):
+    def __init__(self, params, skip_dims=[]):
         self.params = params
         self.mean = None
         self.std = None
 
+        self.skip_dims = skip_dims
+        self.skip_dims.sort()
+
+        self.log_dims = [log_dim for log_dim in self.params.get("log_dims", []) if log_dim not in self.skip_dims]
+        logging.info(f"Log dims before correcting for skip dims: {self.log_dims}")
+        logging.info(f"Skip dims are: {self.skip_dims}")
+
+        # correct for skipped dims
+        offsets = [0 for _ in self.log_dims]
+        for i in range(len(self.skip_dims)):
+            for j in range(len(self.log_dims)):
+                if self.log_dims[j] > self.skip_dims[i]:
+                    offsets[j] += 1
+        self.log_dims = [log_dim - offset for log_dim, offset in zip(self.log_dims, offsets)]
+        logging.info(f"Log dims after correcting for skip dims: {self.log_dims}")
+
     def preprocess_forward(self, data_in):
         """Apply log transform and standardization"""
+
         data = data_in.clone()
 
         # Apply log transform to specified dimensions
-        log_dims = self.params["log_dims"]
-        data[:, log_dims] = torch.log10(data[:, log_dims]+1.)
+        log_dims = self.log_dims
+        data[:, log_dims] = torch.log10(data[:, log_dims] + 1.)
 
         # Compute mean/std if not already set
         if self.mean is None:
@@ -219,7 +308,7 @@ class InputPreprocessor():
         data = data * self.std + self.mean
 
         # Reverse log transform
-        log_dims = self.params["log_dims"]
-        data[:, log_dims] = 10**(data[:, log_dims])-1.
+        log_dims = self.log_dims
+        data[:, log_dims] = 10**(data[:, log_dims]) - 1.
 
         return data.squeeze()

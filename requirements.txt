@@ -7,4 +7,8 @@ uproot
 scipy
 tensorboard
 tqdm
-pandas 
+pandas
+torchdiffeq
+iminuit
+scikit-learn
+ot

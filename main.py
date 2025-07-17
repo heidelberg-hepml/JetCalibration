@@ -135,10 +135,10 @@ def main():
     logging.info(f"Creating trainer")
     printing_callback = PrintingCallback()
     ckpt_callback: pl.callbacks.ModelCheckpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
-    lr_callback = pl.callbacks.LearningRateMonitor(logging_interval="step")
+    lr_callback = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
     trainer = pl.Trainer(
         max_epochs=params.get("epochs", 100),
-        accelerator="gpu", 
+        accelerator="gpu" if torch.cuda.device_count() > 0 else "auto", 
         devices=1, 
         log_every_n_steps=100,
         enable_progress_bar=False,
@@ -172,9 +172,11 @@ def main():
             parameters=params["model_params"]
         )
 
-        # I think we need this to use TF32
-        # opt_model: pl.LightningModule = torch.compile(model)
-        opt_model: pl.LightningModule = model
+        if params.get("compile", False):
+            # I think we need this to use TF32
+            opt_model: pl.LightningModule = torch.compile(model)
+        else:
+            opt_model: pl.LightningModule = model
 
         opt_model.train()
 
@@ -182,14 +184,26 @@ def main():
         trainer.fit(opt_model, data_module)
         # opt_model.load_from_checkpoint(ckpt_callback.best_model_path)
         model = eval(params["model_params"]["model"]).load_from_checkpoint(ckpt_callback.best_model_path)
+        if params.get("compile", False):
+            model = torch.compile(model)
 
         model.eval()
 
         # Generate predictions on test set
-        logging.info(f"Making predictions on test set")
-        test_predictions = trainer.predict(model, data_module.test_dataloader())
+        logging.info(f"Making predictions on test set with {params.get("n_samples", 10)} samples")
+        if params["model_params"]["model"] in ["MLP_CFM"]:
+            n_samples = params.get("n_samples", 10)
+            test_predictions = []
+            for i_sample in range(n_samples):
+                logging.info(f"Sampling step {i_sample}/{n_samples}")
+                test_predictions += trainer.predict(model, data_module.test_dataloader())
+        else:
+            test_predictions = trainer.predict(model, data_module.test_dataloader())
         keys = test_predictions[0].keys()
         test_predictions = {key: torch.cat([pred[key] for pred in test_predictions], dim=0) for key in keys}
+        if params["model_params"]["model"] in ["MLP_CFM"]:
+            test_predictions["samples"] = test_predictions["samples"].reshape(n_samples, -1, len(params["data_params"]["target_dims"]))
+            test_predictions["log_likelihoods"] = test_predictions["log_likelihoods"].reshape(n_samples, -1, len(params["data_params"]["target_dims"]))
         test_predictions["preprocess_mean"] = data_module.target_preprocessor.mean
         test_predictions["preprocess_std"] = data_module.target_preprocessor.std
 
@@ -204,6 +218,8 @@ def main():
         checkpoints = os.listdir(checkpoint_dir)
         checkpoint_path = os.path.join(checkpoint_dir, checkpoints[-1])
         model = eval(params["model_params"]["model"]).load_from_checkpoint(checkpoint_path)
+        if params.get("compile", False):
+            model = torch.compile(model)
 
         model.eval()
 
@@ -214,9 +230,19 @@ def main():
             test_predictions = {key: test_predictions_loaded[key] for key in test_predictions_loaded.keys()}
         except FileNotFoundError:
             logging.info(f"No predictions found in {run_dir}, making predictions on test set")
-            test_predictions = trainer.predict(model, data_module.test_dataloader())
+            if params["model_params"]["model"] in ["MLP_CFM"]:
+                n_samples = params.get("n_samples", 10)
+                test_predictions = []
+                for i_sample in range(n_samples):
+                    logging.info(f"Sampling step {i_sample}/{n_samples}")
+                    test_predictions += trainer.predict(model, data_module.test_dataloader())
+            else:
+                test_predictions = trainer.predict(model, data_module.test_dataloader())
             keys = test_predictions[0].keys()
             test_predictions = {key: torch.cat([pred[key] for pred in test_predictions], dim=0) for key in keys}
+            if params["model_params"]["model"] in ["MLP_CFM"]:
+                test_predictions["samples"] = test_predictions["samples"].reshape(n_samples, -1, len(params["data_params"]["target_dims"]))
+                test_predictions["log_likelihoods"] = test_predictions["log_likelihoods"].reshape(n_samples, -1)    
             test_predictions["preprocess_mean"] = data_module.target_preprocessor.mean
             test_predictions["preprocess_std"] = data_module.target_preprocessor.std
 
@@ -274,6 +300,20 @@ def main():
 
         samples = samples.permute(0, 2, 1)
         log_likelihoods = log_likelihoods.permute(0, 2, 1)
+    elif params["model_params"]["model"] in ["MLP_CFM"]:
+        samples = test_predictions["samples"]
+        log_likelihoods = test_predictions["log_likelihoods"]
+        # print(f"samples: {samples.shape}")
+        # print(f"log_likelihoods: {log_likelihoods.shape}")
+        samples[..., 0] = samples[..., 0] * test_predictions["preprocess_std"][0] + test_predictions["preprocess_mean"][0]
+        samples[..., 1] = samples[..., 1] * test_predictions["preprocess_std"][1] + test_predictions["preprocess_mean"][1]
+        log_likelihoods = log_likelihoods/math.prod(test_predictions["preprocess_std"])
+        # log_likelihoods = log_likelihoods.unsqueeze(-1).expand(-1, -1, 2)
+
+        samples = samples.permute(1, 2, 0) # Batch, target, samples
+        log_likelihoods = log_likelihoods.permute(1, 0).unsqueeze(1).expand(-1, 2, -1) # Batch, target, samples
+        print(f"samples: {samples.shape}")
+        print(f"log_likelihoods: {log_likelihoods.shape}")
     else:
         # Similar sampling logic for non-GMM models
         if len(params["data_params"]["target_dims"]) == 1:
@@ -304,79 +344,94 @@ def main():
             samples = torch.stack([samples_E, samples_m], dim=1)
             log_likelihoods = torch.stack([log_likelihoods_E, log_likelihoods_m], dim=1)
 
-    # Generate plots
-    logging.info(f"Making Plots")
+    logging.info(f"There are {samples.shape} samples.")
 
-    # Prepare data for plotting
-    test_inputs = data_module.test_dataset.tensors[0]
-    test_inputs = data_module.input_preprocessor.preprocess_backward(test_inputs)
-    test_targets = data_module.test_dataset.tensors[1]
-    test_targets = data_module.target_preprocessor.preprocess_backward(test_targets)
+    with torch.inference_mode():
+        # Generate plots
+        logging.info(f"Making Plots")
 
-    logging.info("Plotting joint plots")
+        # Prepare data for plotting
+        test_inputs = data_module.test_dataset.tensors[0]
+        test_inputs = data_module.input_preprocessor.preprocess_backward(test_inputs)
+        test_targets = data_module.test_dataset.tensors[1]
+        test_targets = data_module.target_preprocessor.preprocess_backward(test_targets)
 
-    os.makedirs(os.path.join(run_dir, "plots_joint"), exist_ok=True)
-    plot_pred_correlation(
-        name="target_correlations.pdf",
-        targets=test_targets,
-        samples=samples,
-        log_likelihoods=log_likelihoods,
-        plot_dir=os.path.join(run_dir, "plots_joint")
-    )
-    plot_pred_jet_correlation(
-        name="jet_correlations.pdf",
-        targets=test_targets,
-        samples=samples,
-        input_data=test_inputs,
-        log_likelihoods=log_likelihoods,
-        plot_dir=os.path.join(run_dir, "plots_joint")
-    )
+        train_inputs = data_module.train_dataset.tensors[0]
+        train_inputs = data_module.input_preprocessor.preprocess_backward(train_inputs)
+        train_targets = data_module.train_dataset.tensors[1]
+        train_targets = data_module.target_preprocessor.preprocess_backward(train_targets)
 
-    # Generate plots for each target dimension
-    for target_dim in params["data_params"]["target_dims"]:
-        variable = ["E", "m"][target_dim]
-        logging.info(f"Plotting variable {variable}")
-        os.makedirs(os.path.join(run_dir, f"plots_{variable}"), exist_ok=True)
-        plot_dir = os.path.join(run_dir, f"plots_{variable}")
-        
-        # Initialize plotter with appropriate data
-        if len(params["data_params"]["target_dims"]) == 1:
-            plotter = Plotter(
-                plot_dir, 
-                params,
-                test_predictions, 
-                test_inputs, 
-                test_targets, 
-                samples, 
-                log_likelihoods,
-                variable
-            )
-        else:
-            plotter = Plotter(
-                plot_dir, 
-                params, 
-                {key: test_predictions[key] for key in test_predictions.keys() if variable in key}, 
-                test_inputs, 
-                test_targets[:, target_dim], 
-                samples[:, target_dim], 
-                log_likelihoods[:, target_dim],
-                variable
-            )
+        logging.info("Plotting joint plots")
 
-        # Generate various plots
-        if args.type == "train":
-            plotter.plot_loss_history("loss.pdf", model.train_epoch_losses, model.val_epoch_losses)
+        os.makedirs(os.path.join(run_dir, "plots_joint"), exist_ok=True)
+        plot_pred_correlation(
+            name="target_correlations.pdf",
+            targets=test_targets,
+            samples=samples,
+            log_likelihoods=log_likelihoods,
+            plot_dir=os.path.join(run_dir, "plots_joint"),
+            train_targets=train_targets
+        )
+        plot_pred_jet_correlation(
+            name="jet_correlations.pdf",
+            targets=test_targets,
+            samples=samples,
+            input_data=test_inputs,
+            log_likelihoods=log_likelihoods,
+            plot_dir=os.path.join(run_dir, "plots_joint"),
+            train_targets=train_targets,
+            train_input_data=train_inputs
+        )
 
-        plotter.r_predictions_histogram(f"{variable}_r_predictions_histogram.pdf")
-        plotter.E_M_predictions_histogram(f"{variable}_predictions_histogram.pdf")
-        plotter.r_2d_histogram(f"{variable}_r_2d_histogram.pdf")
-        plotter.E_M_2d_histogram(f"{variable}_2d_histogram.pdf")
-        plotter.pred_inputs_histogram(f"{variable}_pred_inputs_histogram.pdf")
-        # plotter.pred_inputs_histogram_marginalized(f"{variable}_pred_inputs_histogram_marginalized.pdf")
+        # Generate plots for each target dimension
+        for target_dim in params["data_params"]["target_dims"]:
+            variable = ["E", "m"][target_dim]
+            logging.info(f"Plotting variable {variable}")
+            os.makedirs(os.path.join(run_dir, f"plots_{variable}"), exist_ok=True)
+            plot_dir = os.path.join(run_dir, f"plots_{variable}")
+            
+            # Initialize plotter with appropriate data
+            if len(params["data_params"]["target_dims"]) == 1:
+                plotter = Plotter(
+                    plot_dir, 
+                    params,
+                    test_predictions, 
+                    test_inputs, 
+                    test_targets, 
+                    samples, 
+                    log_likelihoods,
+                    variable,
+                    train_inputs=train_inputs,
+                    train_targets=train_targets
+                )
+            else:
+                plotter = Plotter(
+                    plot_dir, 
+                    params, 
+                    {key: test_predictions[key] for key in test_predictions.keys() if variable in key}, 
+                    test_inputs, 
+                    test_targets[:, target_dim], 
+                    samples[:, target_dim], 
+                    log_likelihoods[:, target_dim],
+                    variable,
+                    train_inputs=train_inputs,
+                    train_targets=train_targets[:, target_dim]
+                )
 
-        # Additional plots for GMM models
-        if params["model_params"]["model"] == "MLP_GMM_Regression":
-            plotter.plot_GMM_weights("GMM_weights.pdf")
+            # Generate various plots
+            if args.type == "train":
+                plotter.plot_loss_history("loss.pdf", model.train_epoch_losses, model.val_epoch_losses)
+
+            plotter.r_predictions_histogram(f"{variable}_r_predictions_histogram.pdf")
+            plotter.E_M_predictions_histogram(f"{variable}_predictions_histogram.pdf")
+            plotter.r_2d_histogram(f"{variable}_r_2d_histogram.pdf")
+            plotter.E_M_2d_histogram(f"{variable}_2d_histogram.pdf")
+            plotter.pred_inputs_histogram(f"{variable}_pred_inputs_histogram.pdf")
+            # plotter.pred_inputs_histogram_marginalized(f"{variable}_pred_inputs_histogram_marginalized.pdf")
+
+            # Additional plots for GMM models
+            if params["model_params"]["model"] == "MLP_GMM_Regression":
+                plotter.plot_GMM_weights("GMM_weights.pdf")
 
     logging.info(f"Done")
 

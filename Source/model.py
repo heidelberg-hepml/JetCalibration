@@ -20,11 +20,14 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from .network import MLP
+from .network import MLP, ResMLP
 import time
 import logging
 import torch.distributions as dist
 
+from torchdiffeq import odeint
+
+from torch.autograd import grad
 
 class BaseModel(pl.LightningModule):
     """
@@ -64,14 +67,14 @@ class BaseModel(pl.LightningModule):
             weight_decay=self.params.get('weight_decay', 0.)
         )
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
-        lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.1)
+        lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.5)
         if lr_sheduler_factor == 1.0:
             scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
         else:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode='min',
-                factor=self.params.get('lr_sheduler_factor', 0.1),
+                factor=lr_sheduler_factor,
                 patience=self.params.get('lr_sheduler_patience', 10)
             )
         return {
@@ -91,6 +94,8 @@ class BaseModel(pl.LightningModule):
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
         self.train_loss.append(loss.detach())
         self.log("train_loss", loss, on_step=True, on_epoch=True)
+        if self.train_loss[-1] > 1e2:
+            logging.info(f"Large training loss ({self.train_loss[-1]})")
         return loss 
 
     @torch.inference_mode()
@@ -101,6 +106,8 @@ class BaseModel(pl.LightningModule):
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
         self.val_loss.append(loss.detach())
         self.log("val_loss", loss, on_step=True, on_epoch=True)
+        if self.val_loss[-1] > 1e2:
+            logging.info(f"Large validation loss ({self.val_loss[-1]})")
         return loss 
 
     @torch.inference_mode()
@@ -128,7 +135,6 @@ class BaseModel(pl.LightningModule):
         """Load custom attributes from checkpoint"""
         self.train_epoch_losses = checkpoint["train_epoch_losses"]
         self.val_epoch_losses = checkpoint["val_epoch_losses"]
-
 
 class MLP_MSE_Regression(BaseModel):
     """
@@ -167,14 +173,16 @@ class MLP_Heteroscedastic_Regression(BaseModel):
     def __init__(self, input_dim, target_dim, parameters):
         super().__init__(input_dim, target_dim, parameters)
         self.model = MLP(input_dim, 2*target_dim, self.params['hidden_dim'], self.params['num_layers'])
-        self.gaussian_nlll = nn.GaussianNLLLoss(reduction='mean', full=True)
+        # self.gaussian_nlll = nn.GaussianNLLLoss(reduction='mean', full=True)
 
     def loss_fn(self, y_pred, y):
         """Compute negative log likelihood loss"""
         mu_pred = y_pred[:, :self.target_dim]
         log_var_pred = torch.clamp(y_pred[:, self.target_dim:], min=-10, max=10)
         var_pred = torch.exp(log_var_pred)
-        return self.gaussian_nlll(mu_pred, y, var_pred)
+        # return self.gaussian_nlll(mu_pred, y, var_pred)
+        loss = torch.mean(torch.sum(0.5 * ((mu_pred - y)**2 / var_pred + log_var_pred), dim=-1))
+        return loss
     
     def predict_step(self, batch, batch_idx):
         """Generate predictions with uncertainties"""
@@ -229,10 +237,10 @@ class MLP_MultivariatHeteroscedastic_Regression(BaseModel):
 
     def loss_fn(self, y_pred, y):
         """Compute negative log likelihood loss"""
-        mu_pred = y[...,:self.target_dim].clone()
+        mu_pred = y_pred[...,:self.target_dim].clone()
 
-        sigmas_diag = y[...,self.target_dim:2*self.target_dim].clone()
-        sigmas_off_diag = y[...,2*self.target_dim:].clone()
+        sigmas_diag = y_pred[...,self.target_dim:2*self.target_dim].clone()
+        sigmas_off_diag = y_pred[...,2*self.target_dim:].clone()
 
         sigmas_diag = torch.nn.functional.softplus(sigmas_diag)
 
@@ -304,7 +312,9 @@ class MLP_GMM_Regression(BaseModel):
         super().__init__(input_dim, target_dim, parameters)
         self.n_Gaussians = parameters['n_Gaussians']
         self.model = MLP(input_dim, self.n_Gaussians*3*target_dim, self.params['hidden_dim'], self.params['num_layers'])
-        self.gaussian_nlll = nn.GaussianNLLLoss(reduction='none', full=True)
+        self.torch_loss_fct = parameters.get('torch_loss_fct', False)
+        if self.torch_loss_fct:
+            self.gaussian_nlll = nn.GaussianNLLLoss(reduction='none', full=False)
 
     def loss_fn(self, y_pred, y):
         """Compute negative log likelihood loss for mixture model"""
@@ -318,9 +328,12 @@ class MLP_GMM_Regression(BaseModel):
             weights_pred = y_pred[:, 2*self.n_Gaussians:]
             weights_pred = torch.softmax(weights_pred, dim=1)
 
-            log_likelihood_per_Gaussian = (-1.)*self.gaussian_nlll(mu_pred, y.unsqueeze(1), var_pred) + torch.log(weights_pred+1e-12)
-            return (-1.)*torch.logsumexp(log_likelihood_per_Gaussian, dim=1).mean()
-    
+            if self.torch_loss_fct:
+                log_likelihood_per_Gaussian = (-1.)*self.gaussian_nlll(mu_pred, y.unsqueeze(1), var_pred) + torch.log(weights_pred+1e-12)
+                return (-1.)*torch.logsumexp(log_likelihood_per_Gaussian, dim=1).mean()
+            else:
+                log_likelihood_per_Gaussian = -0.5 * (((mu_pred - y.unsqueeze(1))**2 / var_pred) + log_var_pred) + torch.log(weights_pred+1e-12)
+                return (-1.)*torch.logsumexp(log_likelihood_per_Gaussian, dim=1).mean()
         else:
             # Handle energy and mass predictions separately
             preds_E = y_pred[:, :self.n_Gaussians*3]
@@ -332,8 +345,13 @@ class MLP_GMM_Regression(BaseModel):
             log_var_E = torch.clamp(log_var_E, min=-10, max=10)
             var_E = torch.exp(log_var_E)
             weights_E = torch.softmax(preds_E[:, 2*self.n_Gaussians:], dim=1)
-            log_likelihood_per_Gaussian_E = (-1.)*self.gaussian_nlll(mu_E, y[:, 0].unsqueeze(1), var_E) + torch.log(weights_E+1e-12)
-            loss_E = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_E, dim=1).mean()
+
+            if self.torch_loss_fct:
+                log_likelihood_per_Gaussian_E = (-1.)*self.gaussian_nlll(mu_E, y[:, 0].unsqueeze(1), var_E) + torch.log(weights_E+1e-12)
+                loss_E = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_E, dim=1).mean()
+            else:
+                log_likelihood_per_Gaussian_E = -0.5 * (((mu_E - y[:,0].unsqueeze(1))**2 / var_E) + log_var_E) + torch.log(weights_E+1e-12) 
+                loss_E = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_E, dim=1).mean()
 
             # Mass component
             mu_m = preds_m[:, :self.n_Gaussians]
@@ -341,9 +359,15 @@ class MLP_GMM_Regression(BaseModel):
             log_var_m = torch.clamp(log_var_m, min=-10, max=10)
             var_m = torch.exp(log_var_m)
             weights_m = torch.softmax(preds_m[:, 2*self.n_Gaussians:], dim=1)
-            log_likelihood_per_Gaussian_m = (-1.)*self.gaussian_nlll(mu_m, y[:, 1].unsqueeze(1), var_m) + torch.log(weights_m+1e-12)
-            loss_m = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_m, dim=1).mean()
-            return (loss_E + loss_m) / 2
+
+            if self.torch_loss_fct:
+                log_likelihood_per_Gaussian_m = (-1.)*self.gaussian_nlll(mu_m, y[:, 1].unsqueeze(1), var_m) + torch.log(weights_m+1e-12)
+                loss_m = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_m, dim=1).mean()
+            else:
+                log_likelihood_per_Gaussian_m = -0.5 * (((mu_m - y[:,1].unsqueeze(1))**2 / var_m) + log_var_m) + torch.log(weights_m+1e-12)
+                loss_m = (-1.)*torch.logsumexp(log_likelihood_per_Gaussian_m, dim=1).mean()
+            
+            return loss_E + loss_m
         
     def predict_step(self, batch, batch_idx):
         """Generate predictions for mixture model components"""
@@ -540,59 +564,135 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
 
         return samples, log_likelihoods
 
+# Calculates trace of network jacobian brute force
+def autograd_trace(x_out, x_in, drop_last=False):
+    """Standard brute-force means of obtaining trace of the Jacobian, O(d) calls to autograd"""
+    trJ = 0.
+    if drop_last:
+        for i in range(x_out.shape[1]-1):
+            trJ += grad(x_out[:, i].sum(), x_in,
+                        retain_graph=True)[0].contiguous()[:, i].contiguous().detach()
+    else:
+        for i in range(x_out.shape[1]):
+            trJ += grad(x_out[:, i].sum(), x_in,
+                        retain_graph=True)[0].contiguous()[:, i].contiguous().detach()
+    return trJ.contiguous()
 
 class MLP_CFM(BaseModel):
-
     def __init__(self, input_dim, target_dim, parameters):
         super().__init__(input_dim, target_dim, parameters)
-        self.model = MLP(input_dim+target_dim+1, input_dim, self.params['hidden_dim'], self.params['num_layers'])
+        if self.params.get("res_net", False):
+            self.model = ResMLP(
+                input_dim=input_dim+target_dim+1,
+                output_dim=target_dim,
+                hidden_dim=self.params['hidden_dim'],
+                interm_dim=self.params['interm_dim'],
+                num_layers=self.params['num_layers'],
+                drop=self.params.get('drop', 0.)
+            )
+        else:
+            self.model = MLP(
+                input_dim=input_dim+target_dim+1,
+                output_dim=target_dim,
+                hidden_dim=self.params['hidden_dim'],
+                num_layers=self.params['num_layers']
+            )
         self.loss_fn = nn.MSELoss()
-
 
     def training_step(self, batch, batch_idx):
         """Single training step"""
-        x, y = batch
-        noise = torch.randn_like(y)
+        if len(batch) == 2:
+            x, y = batch
+            noise = torch.randn_like(y)
+        else:
+            x, y, noise = batch
         t = torch.rand(y.shape[0], 1,device=y.device)
         y_t = (1 - t) * noise + t * y
         y_t_dot = y - noise
         v_pred = self(torch.cat([t, y_t, x], dim=-1))
         loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
-        self.train_loss.append(loss.item())
+        # self.train_loss.append(loss.item())
+        self.train_loss.append(loss.detach())
         self.log("train_loss", loss, on_step=True, on_epoch=True)
         return loss 
 
     def validation_step(self, batch, batch_idx):
         """Single validation step"""
-        x, y = batch
-        noise = torch.randn_like(y)
+        if len(batch) == 2:
+            x, y = batch
+            noise = torch.randn_like(y)
+        else:
+            x, y, noise = batch
         t = torch.rand(y.shape[0], 1,device=y.device)
         y_t = (1 - t) * noise + t * y
         y_t_dot = y - noise
         v_pred = self(torch.cat([t, y_t, x], dim=-1))
         loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
-        self.val_loss.append(loss.item())
+        # self.val_loss.append(loss.item())
+        self.val_loss.append(loss.detach())
         self.log("val_loss", loss, on_step=True, on_epoch=True)
         return loss 
 
-        
+    @torch.inference_mode(False)
     def predict_step(self, batch, batch_idx):
+        # print(f"batch: {len(batch)}")
         x, y = batch
 
-        batch_size = x.shape[0]
+        batch_size = x.size(0)
         dtype = x.dtype
         device = x.device
 
-        def net_wrapper(t, y_t):
-            t = t * torch.ones_like(y_t[:, [0]], dtype=dtype, device=device)
-            v = self(torch.cat([t, y_t, x], dim=-1))
-            return v
-        
         noise = torch.randn_like(y)
-        y_t = odeint(func=net_wrapper, 
-                     y0=noise,
-                     t=torch.tensor([0, 1], device=device, dtype=dtype),
-                     rtol=1e-5,
-                     atol=1e-7,
-                     method='dopri5')
-        return y_t[-1]
+
+        # def net_wrapper(t, y_t):
+        #     t = t * torch.ones_like(y_t[:, [0]], dtype=dtype, device=device)
+        #     v = self(torch.cat([t, y_t, x], dim=-1))
+        #     return v
+            
+        # y_t = odeint(
+        #     func=net_wrapper, 
+        #     y0=noise,
+        #     t=torch.tensor([0, 1], device=device , dtype=dtype),
+        #     rtol=1e-5,
+        #     atol=1e-7,
+        #     method='dopri5'
+        # )
+
+        # ys = y_t[-1]
+
+        def net_wrapper(t, y_t):
+            with torch.set_grad_enabled(True):
+                x_t = y_t[0].detach().requires_grad_(True)
+                t = (t * torch.ones_like(x_t[:, [0]], dtype=dtype, device=device)).requires_grad_(False)
+                v = self.model(torch.cat([t, x_t, x], dim=-1))
+                dlogp_dt = -autograd_trace(v, x_t).view(-1, 1)
+            return v.detach(), dlogp_dt.detach()
+        
+        logp_diff_1 = torch.zeros((batch_size, 1), dtype=dtype, device=device)
+        state = (noise, logp_diff_1)
+        x.requires_grad_(False)
+
+        y_t, logp_diff_t = odeint(
+            func=net_wrapper, 
+            y0=state,
+            t=torch.tensor([0, 1], device=device , dtype=dtype),
+            rtol=1e-3,
+            atol=1e-5,
+            method='dopri5'
+        )
+
+        normal = torch.distributions.Normal(loc=torch.zeros_like(y), scale=torch.ones_like(y))
+        log_likelihood_t0 = normal.log_prob(noise).sum(dim=-1, keepdim=True)
+
+        ys = y_t[-1].detach()
+        jac = logp_diff_t[-1].detach()
+        
+        # print(f"x: {x.shape}")
+        # print(f"ys: {ys.shape}")
+        # print(f"log_likelihood_t0: {log_likelihood_t0.shape}")
+        # print(f"jac: {jac.shape}")
+
+        return {
+            "samples": ys, 
+            "log_likelihoods": log_likelihood_t0 + jac
+        }

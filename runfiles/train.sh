@@ -1,18 +1,18 @@
 #!/bin/bash
 #SBATCH -p a30
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem-per-cpu=256G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=300G
 #SBATCH --gres=gpu:1
 #SBATCH --time=40:00:00
-#SBATCH --chdir=/remote/gpu07/huetsch
-#SBATCH --output=output.txt
-#SBATCH --error=error.txt
+#SBATCH --chdir=/remote/gpu03/schiller
+#SBATCH --output=/remote/gpu03/schiller/JetCalibration/results/output.txt
+#SBATCH --error=/remote/gpu03/schiller/JetCalibration/results/error.txt
 
 my_arg=$1
 
-export CUDA_VISxwIBLE_DEVICES=$(cat $SLURM_JOB_GPUS | sed s/.*-gpu// )
-source venv/bin/activate
+source activate JetCalibration
 cd JetCalibration
 
+export PYTHONPATH=/remote/gpu03/schiller/JetCalibration
 python main.py train $my_arg

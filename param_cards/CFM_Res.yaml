@@ -1,0 +1,40 @@
+run_name: CFM_Res
+
+data_params:
+  data_folder: /remote/gpu03/schiller/JetCalibration/data_v2 #/Ak10Jet_1.npy
+  n_files_train: 10
+  n_files_test: 2
+  target_dims: [0,1]
+  skip_dims: [8]
+
+  target_preprocessor:
+    standardize: True
+  
+  input_preprocessor:
+    log_dims: [0, 1, 5, 6, 8, 11, 19, 20]
+    standardize: True
+
+  loader_params:
+    batch_size: 4096
+    num_workers: 4
+    pin_memory: true
+    shuffle: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+
+model_params:
+  model: MLP_CFM
+  res_net: True
+  n_Gaussians: 5
+  hidden_dim: 512
+  interm_dim: 1024
+  num_layers: 6
+  learning_rate: 0.0005
+  lr_sheduler_factor: 0.5
+  lr_sheduler_patience: 5
+
+
+epochs: 200
+save_predictions: True
+n_samples: 50
