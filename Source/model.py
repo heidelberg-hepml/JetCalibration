@@ -66,17 +66,21 @@ class BaseModel(pl.LightningModule):
             lr=self.params.get('learning_rate', 0.001),
             weight_decay=self.params.get('weight_decay', 0.)
         )
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
-        lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.5)
-        if lr_sheduler_factor == 1.0:
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
+        lr_scheduler = self.params.get('lr_scheduler', "ReduceLROnPlateau")
+        if lr_scheduler == "ReduceLROnPlateau":
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+            lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.5)
+            if lr_sheduler_factor == 1.0:
+                scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
+            else:
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode='min',
+                    factor=lr_sheduler_factor,
+                    patience=self.params.get('lr_sheduler_patience', 10)
+                )
         else:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=lr_sheduler_factor,
-                patience=self.params.get('lr_sheduler_patience', 10)
-            )
+            raise NotImplementedError(f"Learning rate scheduler type {lr_scheduler} is not implemeted")
         return {
             'optimizer': optimizer,
             'lr_scheduler': {

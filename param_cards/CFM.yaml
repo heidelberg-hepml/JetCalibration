@@ -26,7 +26,6 @@ data_params:
 
 model_params:
   model: MLP_CFM
-  n_Gaussians: 5
   hidden_dim: 256
   num_layers: 6
   learning_rate: 0.0005

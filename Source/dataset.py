@@ -21,8 +21,39 @@ import numpy as np
 import os
 from torch.utils.data import random_split, TensorDataset, Dataset
 import logging
+import awkward as ak
+import uproot as up
 
 import ot
+
+KEYS_TO_KEEP = [
+    'ak10_E',
+    'ak10_mass',
+    'ak10_rap',
+    'ak10_groomMRatio',
+    'ak10_Width',
+    'ak10_Split12',
+    'ak10_Split23',
+    'ak10_C2',
+    'ak10_D2',
+    'ak10_Tau21',
+    'ak10_Tau32',
+    'ak10_Qw',
+    'ak10_EMFracCaloBased',
+    'ak10_EM3FracCaloBased',
+    'ak10_Tile0FracCaloBased',
+    'ak10_EffNClustsCaloBased',
+    'ak10_NeutralEFrac',
+    'ak10_ChargePTFrac',
+    'ak10_ChargeMFrac',
+    'averageMu',
+    'NPV',    
+]
+
+ADDITIONAL_KEYS_TO_KEEP = [
+    'ak10_true_pt',
+    'ak10_true_rap'
+]
 
 @torch.no_grad()
 def _cfm_ot_collate_fct(examples):
@@ -84,7 +115,6 @@ class DataModule_Single(pl.LightningDataModule):
         data_folder = data_params["data_folder"]
         n_files_train = data_params.get("n_files_train", 1)
         n_files_test = data_params.get("n_files_test", 1)
-        n_data = data_params.get("n_data", None)
 
         # Get sorted list of .npy files
         files = os.listdir(data_folder)
@@ -117,18 +147,64 @@ class DataModule_Single(pl.LightningDataModule):
         # Load test data
         targets_test = []
         inputs_test = []
+        additional_input_test = []
         for i in range(n_files_test):
-            data_i = np.load(test_files[i])
+            # data_i = np.load(test_files[i])
+
+            # nan_mask = np.isnan(data_i).any(axis=1)
+            # inf_mask = np.isinf(data_i).any(axis=1)
+            # data_i = data_i[~nan_mask & ~inf_mask]
+
+            # targets_test.append(data_i[:, data_params["target_dims"]])
+            # inputs_test.append(data_i[:, 2:])
+
+            test_file: str = test_files[i]
+            test_file = test_file.replace(".npy", ".root")
+            test_file = up.open(test_file)
+
+            filekeys = test_file.keys()
+            filekeys.sort(key=lambda k: int(k.split(";")[-1]), reverse=True)
+            latest_key = filekeys[0]
+
+            tree = test_file[latest_key]
+
+            true_E = ak.to_numpy(tree["ak10_true_E"].array())/1000
+            rec_E = ak.to_numpy(tree["ak10_E"].array())
+            E_ratio = rec_E / true_E
+
+            true_m = ak.to_numpy(tree["ak10_true_mass"].array())/1000
+            rec_m = ak.to_numpy(tree["ak10_mass"].array())
+            m_ratio = rec_m / true_m
+
+            true_pt = ak.to_numpy(tree["ak10_true_pt"].array())
+            rec_pt = ak.to_numpy(tree["ak10_pt"].array())
+
+            true_pt_cut = true_pt > 100
+            rec_pt_cut = rec_pt > 100
+            true_mass_cut = true_m > 50
+            rec_mass_cut = rec_m > 50
+            full_cut = true_pt_cut & rec_pt_cut & true_mass_cut & rec_mass_cut
+
+            inputs = np.array([ak.to_numpy(tree[key].array()) for key in KEYS_TO_KEEP])
+            data_i = np.concatenate([E_ratio[:, None], m_ratio[:, None], inputs.T], axis=1)
+            data_i = data_i[full_cut]
+            data_i[:, 0] = np.log10(data_i[:, 0])
+            data_i[:, 1] = np.log10(data_i[:, 1])
+            additional_input_i = np.array([ak.to_numpy(tree[key].array()) for key in ADDITIONAL_KEYS_TO_KEEP]).T
+            additional_input_i = additional_input_i[full_cut]
 
             nan_mask = np.isnan(data_i).any(axis=1)
             inf_mask = np.isinf(data_i).any(axis=1)
             data_i = data_i[~nan_mask & ~inf_mask]
+            additional_input_i = additional_input_i[~nan_mask & ~inf_mask]
 
             targets_test.append(data_i[:, data_params["target_dims"]])
             inputs_test.append(data_i[:, 2:])
+            additional_input_test.append(additional_input_i)
 
         targets_test = np.concatenate(targets_test, axis=0)
         inputs_test = np.concatenate(inputs_test, axis=0)
+        self.additional_input_test = np.concatenate(additional_input_test, axis=0)
 
         # Convert to PyTorch tensors
         targets_train = torch.from_numpy(targets_train)

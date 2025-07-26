@@ -5,3 +5,4 @@ Source/**/__pycache__/
 Source/**/__pycache__/*
 old/
 NathanResults/
+lightning_logs/

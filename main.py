@@ -50,13 +50,10 @@ import math
 from Source.dataset import DataModule_Single
 from Source.model import *
 from Source.util import PrintingCallback
-from Source.plots import Plotter, plot_pred_correlation, plot_pred_jet_correlation
+from Source.plots import Plotter, plot_pred_correlation, plot_pred_jet_correlation, plot_pred_jet_correlation_marginalized
 
 # Configure PyTorch and logging settings
 # torch.set_float32_matmul_precision('medium')
-torch.set_float32_matmul_precision('high')
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
 logging.getLogger("lightning_fabric.plugins.environments.slurm").setLevel(logging.ERROR)
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("lightning").setLevel(logging.WARNING)
@@ -102,6 +99,15 @@ def main():
     else:
         raise NotImplementedError(f"type {args.type} not recognised")
     
+    if params.get("use_tf32", True):
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    else:
+        torch.set_float32_matmul_precision('highest')
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+
     # Configure logging to both file and console
     logging.basicConfig(
         level=logging.INFO,
@@ -119,6 +125,8 @@ def main():
     sys.excepthook = log_uncaught_exceptions
     logging.info("\n")
     logging.info(f"Starting {args.type} run with run_dir {run_dir}")
+
+    logging.info(f"{torch.cuda.device_count() } GPUs available.")
 
     # Initialize data module based on configuration
     logging.info(f"Loading data from {params['data_params']['data_folder']}")
@@ -154,7 +162,7 @@ def main():
             # )
         ],
         check_val_every_n_epoch=1,
-        logger=pl.loggers.TensorBoardLogger(save_dir=run_dir),
+        logger=pl.loggers.TensorBoardLogger(save_dir=run_dir) if args.type == "train" else False,
         enable_model_summary=False,
         num_sanity_val_steps=0,
         detect_anomaly=False,
@@ -183,6 +191,7 @@ def main():
         logging.info(f"Training model for {params.get('epochs', 100)} epochs")
         trainer.fit(opt_model, data_module)
         # opt_model.load_from_checkpoint(ckpt_callback.best_model_path)
+        logging.info(f"Loading model checkpoint from {ckpt_callback.best_model_path}")
         model = eval(params["model_params"]["model"]).load_from_checkpoint(ckpt_callback.best_model_path)
         if params.get("compile", False):
             model = torch.compile(model)
@@ -217,6 +226,7 @@ def main():
         checkpoint_dir = os.path.join(run_dir, "lightning_logs/version_0/checkpoints")
         checkpoints = os.listdir(checkpoint_dir)
         checkpoint_path = os.path.join(checkpoint_dir, checkpoints[-1])
+        logging.info(f"Loading model checkpoint from {checkpoint_path}")
         model = eval(params["model_params"]["model"]).load_from_checkpoint(checkpoint_path)
         if params.get("compile", False):
             model = torch.compile(model)
@@ -382,6 +392,16 @@ def main():
             train_targets=train_targets,
             train_input_data=train_inputs
         )
+        # plot_pred_jet_correlation_marginalized(
+        #     name="jet_correlations_marginalized.pdf",
+        #     targets=test_targets,
+        #     samples=samples,
+        #     input_data=test_inputs,
+        #     log_likelihoods=log_likelihoods,
+        #     plot_dir=os.path.join(run_dir, "plots_joint"),
+        #     train_targets=train_targets,
+        #     train_input_data=train_inputs
+        # )
 
         # Generate plots for each target dimension
         for target_dim in params["data_params"]["target_dims"]:
@@ -402,7 +422,8 @@ def main():
                     log_likelihoods,
                     variable,
                     train_inputs=train_inputs,
-                    train_targets=train_targets
+                    train_targets=train_targets,
+                    skip_dims=params["data_params"].get("skip_dims", [])
                 )
             else:
                 plotter = Plotter(
@@ -415,23 +436,27 @@ def main():
                     log_likelihoods[:, target_dim],
                     variable,
                     train_inputs=train_inputs,
-                    train_targets=train_targets[:, target_dim]
+                    train_targets=train_targets[:, target_dim],
+                    additional_test_inputs=data_module.additional_input_test,
+                    skip_dims=params["data_params"].get("skip_dims", [])
                 )
 
             # Generate various plots
-            if args.type == "train":
-                plotter.plot_loss_history("loss.pdf", model.train_epoch_losses, model.val_epoch_losses)
+            # if args.type == "train":
+            #     plotter.plot_loss_history("loss.pdf", model.train_epoch_losses, model.val_epoch_losses)
 
-            plotter.r_predictions_histogram(f"{variable}_r_predictions_histogram.pdf")
-            plotter.E_M_predictions_histogram(f"{variable}_predictions_histogram.pdf")
-            plotter.r_2d_histogram(f"{variable}_r_2d_histogram.pdf")
-            plotter.E_M_2d_histogram(f"{variable}_2d_histogram.pdf")
-            plotter.pred_inputs_histogram(f"{variable}_pred_inputs_histogram.pdf")
+            # plotter.r_predictions_histogram(f"{variable}_r_predictions_histogram.pdf")
+            # plotter.E_M_predictions_histogram(f"{variable}_predictions_histogram.pdf")
+            # plotter.r_2d_histogram(f"{variable}_r_2d_histogram.pdf")
+            # plotter.E_M_2d_histogram(f"{variable}_2d_histogram.pdf")
+            # plotter.E_M_predictions_input_histogram(f"{variable}_pred_inputs_histogram.pdf")
+            # plotter.pred_inputs_histogram(f"{variable}_r_pred_inputs_histogram.pdf")
+            # plotter.r_rel_over_input(f"{variable}_r_relativ_over_input.pdf")
             # plotter.pred_inputs_histogram_marginalized(f"{variable}_pred_inputs_histogram_marginalized.pdf")
 
             # Additional plots for GMM models
-            if params["model_params"]["model"] == "MLP_GMM_Regression":
-                plotter.plot_GMM_weights("GMM_weights.pdf")
+            # if params["model_params"]["model"] == "MLP_GMM_Regression":
+            #     plotter.plot_GMM_weights("GMM_weights.pdf")
 
     logging.info(f"Done")
 
