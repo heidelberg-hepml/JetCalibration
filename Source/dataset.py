@@ -24,6 +24,10 @@ import logging
 import awkward as ak
 import uproot as up
 
+from collections.abc import Iterator
+
+import random
+
 import ot
 
 KEYS_TO_KEEP = [
@@ -56,9 +60,25 @@ ADDITIONAL_KEYS_TO_KEEP = [
 ]
 
 @torch.no_grad()
+def _cfm_collate_fct(examples):
+    x, y = torch.utils.data.default_collate(examples)
+
+    noise = torch.randn_like(y)
+    t = torch.rand(y.shape[0], 1, device=y.device)
+
+    y_t = (1 - t) * noise + t * y
+    y_t_dot = y - noise
+
+    state = torch.cat([t, y_t, x], dim=-1)
+        
+    return state, y_t_dot
+
+@torch.no_grad()
 def _cfm_ot_collate_fct(examples):
     x, y = torch.utils.data.default_collate(examples)
+
     noise = torch.randn_like(y)
+    t = torch.rand(y.shape[0], 1,device=y.device)
 
     batch_size = x.shape[0]
 
@@ -88,7 +108,12 @@ def _cfm_ot_collate_fct(examples):
     x_ot= x[j]
     y_ot = y[j]
 
-    return x_ot, y_ot, noise_ot
+    y_t = (1 - t) * noise_ot + t * y_ot
+    y_t_dot = y_ot - noise
+        
+    state = torch.cat([t, y_t, x], dim=-1)
+
+    return state, y_t_dot
 
 class DataModule_Single(pl.LightningDataModule):
     """
@@ -121,6 +146,8 @@ class DataModule_Single(pl.LightningDataModule):
         files = [file for file in files if file.endswith(".npy") and "full_data" not in file]
         files.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
         data_paths = [os.path.join(data_folder, file) for file in files]
+
+        assert n_files_train + n_files_test <= len(data_paths), f"You chose to many files. Total number of files: {len(data_paths)}"
 
         train_files = data_paths[:n_files_train]
         test_files = data_paths[-n_files_test:]
@@ -191,6 +218,10 @@ class DataModule_Single(pl.LightningDataModule):
             data_i[:, 0] = np.log10(data_i[:, 0])
             data_i[:, 1] = np.log10(data_i[:, 1])
             additional_input_i = np.array([ak.to_numpy(tree[key].array()) for key in ADDITIONAL_KEYS_TO_KEEP]).T
+            for i, key in enumerate(ADDITIONAL_KEYS_TO_KEEP):
+                if key == "ak10_true_pt":
+                    additional_input_i[i] /= 1000
+
             additional_input_i = additional_input_i[full_cut]
 
             nan_mask = np.isnan(data_i).any(axis=1)
@@ -240,6 +271,8 @@ class DataModule_Single(pl.LightningDataModule):
         self.val_dataset = TensorDataset(inputs_train[train_val_split:], targets_train[train_val_split:])
         self.test_dataset = TensorDataset(inputs_test, targets_test)
 
+        self.train_batches_per_epoch = len(self.train_dataset) // self.loader_params["batch_size"]
+
     def train_dataloader(self):
         """Creates DataLoader for training data"""
         batch_size = self.loader_params["batch_size"]
@@ -248,7 +281,14 @@ class DataModule_Single(pl.LightningDataModule):
         shuffle = self.loader_params["shuffle"]
         persistent_workers = self.loader_params["persistent_workers"]
 
+        collate_fct = None
         cfm_ot = self.loader_params.get("cfm_ot", False)
+        if cfm_ot:
+            collate_fct = _cfm_ot_collate_fct
+        else:
+            cfm = self.loader_params.get("cfm", False)
+            if cfm:
+                collate_fct = _cfm_collate_fct
 
         return DataLoader(
             self.train_dataset,
@@ -257,7 +297,184 @@ class DataModule_Single(pl.LightningDataModule):
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
-            collate_fn=_cfm_ot_collate_fct if cfm_ot else None
+            drop_last=True,
+            collate_fn=collate_fct
+        )
+
+    def val_dataloader(self):
+        """Creates DataLoader for validation data"""
+        batch_size = self.loader_params["batch_size"]
+        num_workers = self.loader_params.get("val_num_worker", self.loader_params["num_workers"])
+        pin_memory = self.loader_params["pin_memory"]
+        persistent_workers = self.loader_params["persistent_workers"]
+
+        collate_fct = None
+        cfm_ot = self.loader_params.get("cfm_ot", False)
+        if cfm_ot:
+            collate_fct = _cfm_ot_collate_fct
+        else:
+            cfm = self.loader_params.get("cfm", False)
+            if cfm:
+                collate_fct = _cfm_collate_fct
+
+        return DataLoader(
+            self.val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            drop_last=True,
+            collate_fn=collate_fct
+        )
+    
+    def test_dataloader(self):
+        """Creates DataLoader for test data"""
+        batch_size = self.loader_params.get("test_batch_size", self.loader_params["batch_size"])
+        # num_workers = self.loader_params["num_workers"]
+        num_workers = 1
+        pin_memory = self.loader_params["pin_memory"]
+        persistent_workers = self.loader_params["persistent_workers"]
+        return DataLoader(
+            self.test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            drop_last=False,
+            prefetch_factor=1
+        )
+
+class DataSampleDataset(Dataset):
+    def __init__(self, inputs, data_targets, samples_target, cond_type):
+        self.inputs = inputs
+        self.data_targets = data_targets
+        self.samples_target = samples_target
+
+        self._n_samples = samples_target.shape[-1] - 1
+
+        self.cond_type = cond_type
+        if cond_type.lower() == "FullPhaseSpace".lower():
+            self.concat_inputs = True
+        elif cond_type.lower() == "NoPhaseSpace".lower():
+            self.concat_inputs = False
+        else:
+            raise NotImplementedError(f"Conditioning type {cond_type} is not implemented")
+
+
+    def __len__(self):
+        return 2 * self.inputs.shape[0]
+    
+    def __getitem__(self, idx):
+        if idx < self.inputs.shape[0]:
+            if self.concat_inputs:
+                return torch.cat([self.data_targets[idx], self.inputs[idx]]), torch.tensor([1.], dtype=torch.float32)
+            else:
+                return self.data_targets[idx], torch.tensor([1.], dtype=torch.float32)
+        else:
+            if self.concat_inputs:
+                return torch.cat([self.samples_target[idx - self.inputs.shape[0], :, random.randint(0, self._n_samples)], self.inputs[idx - self.inputs.shape[0]]]), torch.tensor([0.], dtype=torch.float32)
+            else:
+                return self.samples_target[idx - self.inputs.shape[0], :, random.randint(0, self._n_samples)], torch.tensor([0.], dtype=torch.float32)
+
+class Classifier_Sampler(torch.utils.data.Sampler[int]):
+    def __init__(self, size):
+        self.size = size
+
+    def __len__(self):
+        return 2 * self.size
+    
+    def __iter__(self) -> Iterator[int]:
+        ind1 = torch.randperm(self.size)
+        ind2 = torch.randperm(self.size) + self.size
+
+        for i in range(self.size):
+            yield ind1[i]
+            yield ind2[i]
+
+class Classifier_DataModule(pl.LightningDataModule):
+    def __init__(self, data_params, inputs, data_targets, samples, cond_type):
+        super().__init__()
+        self.data_params = data_params
+        self.loader_params = data_params["loader_params"]
+
+        self.cond_type = cond_type
+
+        # test_dataset:
+        #    inputs: [size, phasespace]
+        #    targets: [size, targets]
+        # samples:  [size, targets, samples]
+
+        n_train = int(inputs.shape[0] * data_params["split_frac"][0])
+        n_test = int(inputs.shape[0] * data_params["split_frac"][2])
+        n_val = inputs.shape[0] - n_train - n_test
+
+        # perm = torch.randperm(inputs.shape[0])
+        # inputs = inputs[perm]
+        # data_targets = data_targets[perm]
+        # samples = samples[perm]
+
+        train_inputs = inputs[:n_train]
+        train_data_targets = data_targets[:n_train]
+        train_samples = samples[:n_train]
+
+        eval_inputs = inputs[n_train:n_train+n_val]
+        eval_data_targets = data_targets[n_train:n_train+n_val]
+        eval_samples = samples[n_train:n_train+n_val]
+
+        test_inputs = inputs[n_train+n_val:]
+        test_data_targets = data_targets[n_train+n_val:]
+        test_samples = samples[n_train+n_val:]
+
+        n_samples = samples.shape[-1]
+        
+        if cond_type.lower() == "FullPhaseSpace".lower():
+            test_data_inputs = torch.cat([test_data_targets, test_inputs], dim=1)
+            test_data_class = torch.ones(test_data_inputs.shape[0], 1)
+
+            test_gen_inputs = torch.cat([test_samples, test_inputs.unsqueeze(-1).expand(-1, -1, n_samples)], dim=1).permute(0, 2, 1).reshape(-1, test_data_inputs.shape[1])
+            test_gen_class = torch.zeros(test_gen_inputs.shape[0], 1)
+
+            test_x = torch.cat([test_data_inputs, test_gen_inputs], dim=0)
+            test_classes = torch.cat([test_data_class, test_gen_class], dim=0)
+        elif cond_type.lower() == "NoPhaseSpace".lower():
+            test_data_inputs = test_data_targets
+            test_data_class = torch.ones(test_data_inputs.shape[0], 1)
+
+            test_gen_inputs = test_samples.permute(0, 2, 1).reshape(-1, test_data_inputs.shape[1])
+            test_gen_class = torch.zeros(test_gen_inputs.shape[0], 1)
+
+            test_x = torch.cat([test_data_inputs, test_gen_inputs], dim=0)
+            test_classes = torch.cat([test_data_class, test_gen_class], dim=0)
+        else:
+            raise NotImplementedError(f"Conditioning type {cond_type} is not implemented")
+
+        self.train_dataset = DataSampleDataset(train_inputs, train_data_targets, train_samples, cond_type)
+        self.val_dataset = DataSampleDataset(eval_inputs, eval_data_targets, eval_samples, cond_type)
+        self.test_dataset = TensorDataset(test_x, test_classes)
+
+        self.train_batches_per_epoch = len(self.train_dataset) // self.loader_params["batch_size"]
+
+        logging.info(f"Classifier true data: Train size: {train_data_targets.shape[0]:,}, Val size: {eval_data_targets.shape[0]:,}, Test size: {test_data_inputs.shape[0]:,}")
+
+    def train_dataloader(self):
+        """Creates DataLoader for training data"""
+        batch_size = self.loader_params["batch_size"]
+        num_workers = self.loader_params["num_workers"]
+        pin_memory = self.loader_params["pin_memory"]
+        # shuffle = self.loader_params["shuffle"]
+        persistent_workers = self.loader_params["persistent_workers"]
+
+        return DataLoader(
+            self.train_dataset,
+            batch_size=batch_size,
+            sampler=Classifier_Sampler(len(self.train_dataset) // 2),
+            # shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            drop_last=True
         )
 
     def val_dataloader(self):
@@ -267,22 +484,22 @@ class DataModule_Single(pl.LightningDataModule):
         pin_memory = self.loader_params["pin_memory"]
         persistent_workers = self.loader_params["persistent_workers"]
 
-        cfm_ot = self.loader_params.get("cfm_ot", False)
-
         return DataLoader(
             self.val_dataset,
             batch_size=batch_size,
-            shuffle=False,
+            sampler=Classifier_Sampler(len(self.val_dataset) // 2),
+            # shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
-            collate_fn=_cfm_ot_collate_fct if cfm_ot else None
+            drop_last=True
         )
     
     def test_dataloader(self):
         """Creates DataLoader for test data"""
         batch_size = self.loader_params.get("test_batch_size", self.loader_params["batch_size"])
         num_workers = self.loader_params["num_workers"]
+        # num_workers = 1
         pin_memory = self.loader_params["pin_memory"]
         persistent_workers = self.loader_params["persistent_workers"]
         return DataLoader(
@@ -291,9 +508,10 @@ class DataModule_Single(pl.LightningDataModule):
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=persistent_workers
+            persistent_workers=persistent_workers,
+            drop_last=False
         )
-    
+
 
 class TargetPreprocessor():
     """
@@ -388,3 +606,50 @@ class InputPreprocessor():
         data[:, log_dims] = 10**(data[:, log_dims]) - 1.
 
         return data.squeeze()
+
+def _get_log_response_mode(log_responses: np.ndarray, log_likelihoods: np.ndarray):
+    return log_responses[np.arange(log_responses.shape[0]), :, np.argmax(log_likelihoods, axis=1)]
+
+def _get_response_mode(responses: np.ndarray, log_likelihoods: np.ndarray):
+    log_likelihoods = log_likelihoods - np.sum(np.log(responses), axis=1)
+
+    return responses[np.arange(responses.shape[0]), :, np.argmax(log_likelihoods, axis=1)]
+
+def _get_response_jet_mean(responses: np.ndarray):
+    inv_responses = 1. / responses
+    mean_inv_response = np.mean(inv_responses, axis=-1)
+    return 1. / mean_inv_response
+
+def _get_response_jet_mode(responses: np.ndarray, log_likelihoods: np.ndarray):
+    log_likelihoods = log_likelihoods + np.sum(np.log(responses), axis=1)
+
+    return responses[np.arange(responses.shape[0]), :, np.argmax(log_likelihoods, axis=1)]
+
+class SampleEvaluation():
+    def __init__(
+            self,
+            log_response_samples: np.ndarray,  # (size, targets, n_samples), targets: log r_E, log r_m
+            log_likelihoods: np.ndarray        # (size, n_samples)
+    ):
+        logging.info("Evaluating samples")
+
+        self.log_response_samples = log_response_samples
+        self.log_response_mean = np.mean(self.log_response_samples, axis=-1)
+        self.log_response_median = np.median(self.log_response_samples, axis=-1)
+        self.log_response_mode = _get_log_response_mode(self.log_response_samples, log_likelihoods)
+
+        logging.info("Done evaluating log responses")
+
+        self.response_samples = 10.**log_response_samples
+        self.response_mean = np.mean(self.response_samples, axis=-1)
+        self.response_median = np.median(self.response_samples, axis=-1)
+        self.response_mode = _get_response_mode(self.response_samples, log_likelihoods)
+
+        self.response_jet_mean = _get_response_jet_mean(self.response_samples)
+        self.response_jet_mode = _get_response_jet_mode(self.response_samples, log_likelihoods)
+
+        logging.info("Done evaluating responses")
+
+
+
+

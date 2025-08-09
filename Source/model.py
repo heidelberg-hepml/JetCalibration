@@ -40,7 +40,7 @@ class BaseModel(pl.LightningModule):
         target_dim (int): Dimension of target variables 
         parameters (dict): Model configuration parameters
     """
-    def __init__(self, input_dim, target_dim, parameters):
+    def __init__(self, input_dim, target_dim, parameters, lr_warmup_steps=0):
         super().__init__()
         self.params = parameters
         self.input_dim = input_dim
@@ -55,39 +55,66 @@ class BaseModel(pl.LightningModule):
         self.train_loss = []
         self.val_loss = []
 
+        self.lr_warmup_steps = lr_warmup_steps
+
     def forward(self, x):
         """Forward pass through model"""
         return self.model(x)
     
     def configure_optimizers(self):
         """Setup optimizer and learning rate scheduler"""
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.params.get('learning_rate', 0.001),
             weight_decay=self.params.get('weight_decay', 0.)
         )
+        # warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=1.e-5, end_factor=1, total_iters=self.lr_scheduler_step)
+
         lr_scheduler = self.params.get('lr_scheduler', "ReduceLROnPlateau")
         if lr_scheduler == "ReduceLROnPlateau":
             # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
             lr_sheduler_factor = self.params.get('lr_sheduler_factor', 0.5)
             if lr_sheduler_factor == 1.0:
-                scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
+                main_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 1.)
             else:
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                main_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     optimizer,
                     mode='min',
                     factor=lr_sheduler_factor,
+                    threshold=self.params.get('lr_threshold', 0.0001),
                     patience=self.params.get('lr_sheduler_patience', 10)
                 )
         else:
             raise NotImplementedError(f"Learning rate scheduler type {lr_scheduler} is not implemeted")
+        
+        # return {
+        #     'optimizer': optimizer,
+        #     'lr_scheduler': [
+        #         {
+        #             'scheduler': warmup_scheduler,
+        #             'interval': 'step',  # called every training step
+        #             'frequency': 1,
+        #             'name': 'step_lr',
+        #         },
+        #         {
+        #             'scheduler': main_scheduler,
+        #             'interval': 'epoch',  # called every training epoch
+        #             'frequency': 1,
+        #             'monitor': 'val_loss',  # required for ReduceLROnPlateau
+        #             'name': 'plateau_lr',
+        #         }
+        #     ]
+        # }
+
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
-                'scheduler': scheduler,
+                'scheduler': main_scheduler,
                 'monitor': 'val_loss',
+                # 'monitor': 'val_loss_epoch',
                 'interval': 'epoch',
-                'frequency': 1
+                'frequency': 1,
+                'name': 'plateau_lr'
             }
         }
     
@@ -97,7 +124,8 @@ class BaseModel(pl.LightningModule):
         y_pred = self(x)
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
         self.train_loss.append(loss.detach())
-        self.log("train_loss", loss, on_step=True, on_epoch=True)
+        # self.log("train_loss", loss, on_step=True, on_epoch=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True)
         if self.train_loss[-1] > 1e2:
             logging.info(f"Large training loss ({self.train_loss[-1]})")
         return loss 
@@ -109,7 +137,8 @@ class BaseModel(pl.LightningModule):
         y_pred = self(x)
         loss = self.loss_fn(y_pred.squeeze(), y.squeeze())
         self.val_loss.append(loss.detach())
-        self.log("val_loss", loss, on_step=True, on_epoch=True)
+        # self.log("val_loss", loss, on_step=True, on_epoch=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
         if self.val_loss[-1] > 1e2:
             logging.info(f"Large validation loss ({self.val_loss[-1]})")
         return loss 
@@ -119,7 +148,7 @@ class BaseModel(pl.LightningModule):
         """Compute and store average training loss for epoch"""
         epoch_loss = torch.stack(self.train_loss).mean()
         self.train_epoch_losses.append(epoch_loss.item())
-        self.log("train_loss",  self.train_epoch_losses[-1], on_step=False, on_epoch=True)
+        # self.log("train_loss",  self.train_epoch_losses[-1], on_step=False, on_epoch=True)
         self.train_loss = []
 
     @torch.inference_mode()
@@ -127,7 +156,7 @@ class BaseModel(pl.LightningModule):
         """Compute and store average validation loss for epoch"""
         epoch_loss = torch.stack(self.val_loss).mean()
         self.val_epoch_losses.append(epoch_loss.item())
-        self.log("val_loss", self.val_epoch_losses[-1], on_step=False, on_epoch=True)
+        # self.log("val_loss", self.val_epoch_losses[-1], on_step=False, on_epoch=True)
         self.val_loss = []
 
     def on_save_checkpoint(self, checkpoint):
@@ -312,10 +341,16 @@ class MLP_GMM_Regression(BaseModel):
         target_dim (int): Target variable dimension
         parameters (dict): Model configuration parameters including n_Gaussians
     """
-    def __init__(self, input_dim, target_dim, parameters):
-        super().__init__(input_dim, target_dim, parameters)
+    def __init__(self, input_dim, target_dim, parameters, **kwargs):
+        super().__init__(input_dim, target_dim, parameters, **kwargs)
         self.n_Gaussians = parameters['n_Gaussians']
-        self.model = MLP(input_dim, self.n_Gaussians*3*target_dim, self.params['hidden_dim'], self.params['num_layers'])
+        self.model = MLP(
+            input_dim,
+            self.n_Gaussians*3*target_dim,
+            self.params['hidden_dim'],
+            self.params['num_layers'],
+            use_silu=self.params.get('use_silu', False)
+        )
         self.torch_loss_fct = parameters.get('torch_loss_fct', False)
         if self.torch_loss_fct:
             self.gaussian_nlll = nn.GaussianNLLLoss(reduction='none', full=False)
@@ -448,8 +483,8 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
         target_dim (int): Target variable dimension
         parameters (dict): Model configuration parameters including n_Gaussians
     """
-    def __init__(self, input_dim, target_dim, parameters):
-        super().__init__(input_dim, target_dim, parameters)
+    def __init__(self, input_dim, target_dim, parameters, **kwargs):
+        super().__init__(input_dim, target_dim, parameters, **kwargs)
         self.n_Gaussians = parameters['n_Gaussians']
 
         self._index_diag = torch.arange(0, target_dim)
@@ -464,7 +499,8 @@ class MLP_Multivariate_GMM_Regression(BaseModel):
             output_dim=(self.output_dim_per_mode + 1) * self.n_Gaussians,
             hidden_dim=self.params['hidden_dim'],
             num_layers=self.params['num_layers'],
-            drop=parameters.get("drop", 0.)
+            drop=parameters.get("drop", 0.),
+            use_silu=self.params.get('use_silu', False)
         )
         
     def loss_fn(self, y_pred: torch.FloatTensor, y: torch.FloatTensor):
@@ -583,8 +619,8 @@ def autograd_trace(x_out, x_in, drop_last=False):
     return trJ.contiguous()
 
 class MLP_CFM(BaseModel):
-    def __init__(self, input_dim, target_dim, parameters):
-        super().__init__(input_dim, target_dim, parameters)
+    def __init__(self, input_dim, target_dim, parameters, **kwargs):
+        super().__init__(input_dim, target_dim, parameters, **kwargs)
         if self.params.get("res_net", False):
             self.model = ResMLP(
                 input_dim=input_dim+target_dim+1,
@@ -592,49 +628,59 @@ class MLP_CFM(BaseModel):
                 hidden_dim=self.params['hidden_dim'],
                 interm_dim=self.params['interm_dim'],
                 num_layers=self.params['num_layers'],
-                drop=self.params.get('drop', 0.)
+                drop=self.params.get('drop', 0.),
+                use_silu=self.params.get('use_silu', False)
             )
         else:
             self.model = MLP(
                 input_dim=input_dim+target_dim+1,
                 output_dim=target_dim,
                 hidden_dim=self.params['hidden_dim'],
-                num_layers=self.params['num_layers']
+                num_layers=self.params['num_layers'],
+                use_silu=self.params.get('use_silu', False)
             )
         self.loss_fn = nn.MSELoss()
 
     def training_step(self, batch, batch_idx):
         """Single training step"""
-        if len(batch) == 2:
-            x, y = batch
-            noise = torch.randn_like(y)
-        else:
-            x, y, noise = batch
-        t = torch.rand(y.shape[0], 1,device=y.device)
-        y_t = (1 - t) * noise + t * y
-        y_t_dot = y - noise
-        v_pred = self(torch.cat([t, y_t, x], dim=-1))
+        # if len(batch) == 2:
+        #     x, y = batch
+        #     noise = torch.randn_like(y)
+        #     t = torch.rand(y.shape[0], 1,device=y.device)
+        #     y_t = (1 - t) * noise + t * y
+        #     y_t_dot = y - noise
+        #     state = torch.cat([t, y_t, x], dim=-1)
+        # else:
+        
+        state, y_t_dot = batch
+       
+        v_pred = self(state)
         loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
         # self.train_loss.append(loss.item())
         self.train_loss.append(loss.detach())
-        self.log("train_loss", loss, on_step=True, on_epoch=True)
+        # self.log("train_loss", loss, on_step=True, on_epoch=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True)
         return loss 
 
     def validation_step(self, batch, batch_idx):
         """Single validation step"""
-        if len(batch) == 2:
-            x, y = batch
-            noise = torch.randn_like(y)
-        else:
-            x, y, noise = batch
-        t = torch.rand(y.shape[0], 1,device=y.device)
-        y_t = (1 - t) * noise + t * y
-        y_t_dot = y - noise
-        v_pred = self(torch.cat([t, y_t, x], dim=-1))
+        # if len(batch) == 2:
+        #     x, y = batch
+        #     noise = torch.randn_like(y)
+        #     t = torch.rand(y.shape[0], 1,device=y.device)
+        #     y_t = (1 - t) * noise + t * y
+        #     y_t_dot = y - noise
+        #     state = torch.cat([t, y_t, x], dim=-1)
+        # else:
+        
+        state, y_t_dot = batch
+       
+        v_pred = self(state)
         loss = self.loss_fn(v_pred.squeeze(), y_t_dot.squeeze())
         # self.val_loss.append(loss.item())
         self.val_loss.append(loss.detach())
-        self.log("val_loss", loss, on_step=True, on_epoch=True)
+        # self.log("val_loss", loss, on_step=True, on_epoch=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
         return loss 
 
     @torch.inference_mode(False)
@@ -676,6 +722,8 @@ class MLP_CFM(BaseModel):
         state = (noise, logp_diff_1)
         x.requires_grad_(False)
 
+        # logging.info(f"noise: {noise.shape}")
+
         y_t, logp_diff_t = odeint(
             func=net_wrapper, 
             y0=state,
@@ -692,7 +740,7 @@ class MLP_CFM(BaseModel):
         jac = logp_diff_t[-1].detach()
         
         # print(f"x: {x.shape}")
-        # print(f"ys: {ys.shape}")
+        # logging.info(f"ys: {ys.shape}")
         # print(f"log_likelihood_t0: {log_likelihood_t0.shape}")
         # print(f"jac: {jac.shape}")
 
@@ -700,3 +748,50 @@ class MLP_CFM(BaseModel):
             "samples": ys, 
             "log_likelihoods": log_likelihood_t0 + jac
         }
+
+class MLP_Classifier(BaseModel):
+    def __init__(self, input_dim, target_dim, parameters, **kwargs):
+        super().__init__(input_dim, target_dim, parameters, **kwargs)
+        self.model = MLP(
+            input_dim,
+            target_dim,
+            self.params['hidden_dim'],
+            self.params['num_layers'],
+            drop=self.params.get('drop', 0.),
+            use_silu=self.params.get('use_silu', False)
+        )
+
+    def training_step(self, batch, batch_idx):
+        """Single training step"""
+        x, y = batch
+        y_pred = self(x)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(y_pred, y, reduction="mean")
+        self.train_loss.append(loss.detach())
+        # self.log("train_loss", loss, on_step=True, on_epoch=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True)
+        if self.train_loss[-1] > 1e2:
+            logging.info(f"Large training loss ({self.train_loss[-1]})")
+        return loss 
+
+    @torch.inference_mode()
+    def validation_step(self, batch, batch_idx):
+        """Single validation step"""
+        x, y = batch
+        y_pred = self(x)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(y_pred, y, reduction="mean")
+        self.val_loss.append(loss.detach())
+        # self.log("val_loss", loss, on_step=True, on_epoch=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
+        if self.val_loss[-1] > 1e2:
+            logging.info(f"Large validation loss ({self.val_loss[-1]})")
+        return loss 
+
+    @torch.inference_mode()
+    def predict_step(self, batch, batch_idx):
+        """Generate predictions for a batch"""
+        x, y = batch
+        y_pred = self(x)
+        y_pred = torch.nn.functional.sigmoid(y_pred)
+
+        return {'weight':y_pred, 'class': y }
+

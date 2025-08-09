@@ -9,12 +9,10 @@
 #SBATCH --output=/remote/gpu03/schiller/JetCalibration/results/output.txt
 #SBATCH --error=/remote/gpu03/schiller/JetCalibration/results/error.txt
 
-ulimit -n 1000000
-
 my_arg=$1
 
 source activate JetCalibration
 cd JetCalibration
 
 export PYTHONPATH=/remote/gpu03/schiller/JetCalibration
-python main.py plot $my_arg
+python main.py plot_classifier $my_arg

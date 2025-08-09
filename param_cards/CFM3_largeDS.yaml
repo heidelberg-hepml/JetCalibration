@@ -1,10 +1,10 @@
-run_name: CFM3
+run_name: CFM3_largeDS
 
 data_params:
   data_folder: /remote/gpu03/schiller/JetCalibration/data_v2 #/Ak10Jet_1.npy
   #n_data: 1000000
-  n_files_train: 10
-  n_files_test: 2
+  n_files_train: 50
+  n_files_test: 1
   target_dims: [0,1]
   skip_dims: [8]
 
@@ -16,25 +16,28 @@ data_params:
     standardize: True
 
   loader_params:
-    batch_size: 32768
-    num_workers: 4
+    batch_size: 65536 # 32768
+    num_workers: 30
     pin_memory: true
     shuffle: true
     persistent_workers: true
-    prefetch_factor: 4
+    prefetch_factor: 1
 
 
 model_params:
   model: MLP_CFM
   hidden_dim: 512
   num_layers: 6
-  learning_rate: 0.0005
-  lr_sheduler_factor: 0.5
-  lr_sheduler_patience: 5
+  learning_rate: 0.001
+  lr_sheduler_factor: 0.8
+  lr_sheduler_patience: 10
+  lr_threshold: 0.0
+  use_silu: True
 
-epochs: 200
+epochs: 300
 save_predictions: True
 n_samples: 50
+compile: False
 
 defaults:
   - classifier: classifier

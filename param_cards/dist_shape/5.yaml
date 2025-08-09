@@ -1,10 +1,9 @@
-run_name: CFM3
+run_name: DistrShape_5
 
 data_params:
   data_folder: /remote/gpu03/schiller/JetCalibration/data_v2 #/Ak10Jet_1.npy
-  #n_data: 1000000
-  n_files_train: 10
-  n_files_test: 2
+  n_files_train: 40
+  n_files_test: 10
   target_dims: [0,1]
   skip_dims: [8]
 
@@ -17,24 +16,23 @@ data_params:
 
   loader_params:
     batch_size: 32768
-    num_workers: 4
+    num_workers: 24
+    val_num_workers: 6
     pin_memory: true
     shuffle: true
     persistent_workers: true
-    prefetch_factor: 4
+    prefetch_factor: 1
 
 
 model_params:
-  model: MLP_CFM
+  model: MLP_Multivariate_GMM_Regression
+  n_Gaussians: 5
   hidden_dim: 512
   num_layers: 6
-  learning_rate: 0.0005
+  learning_rate: 0.001
   lr_sheduler_factor: 0.5
   lr_sheduler_patience: 5
 
-epochs: 200
+epochs: 100
 save_predictions: True
 n_samples: 50
-
-defaults:
-  - classifier: classifier

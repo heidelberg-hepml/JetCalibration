@@ -33,6 +33,7 @@ Constants:
 """
 
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib as mpl
@@ -44,7 +45,8 @@ from scipy.stats import binned_statistic
 import torch
 
 from Source.plot_utils import *
-plt.style.use('/remote/gpu07/huetsch/JetCalibration/Source/plotting.mplstyle')
+from Source.dataset import SampleEvaluation
+plt.style.use('/remote/gpu03/schiller/JetCalibration/Source/plotting.mplstyle')
 
 
 # Figure sizes and layout parameters
@@ -92,8 +94,15 @@ atlas_info2 = ('\\textbf{\\textit{ATLAS}} Simulation Internal\n'
                '{\\footnotesize $E_{\\text{clus}}^{\\text{dep}}>300\,\\text{MeV}$}')
 
 # Input feature names and whether they should use log scale
-keys_current = ['E', 'mass', 'rap', 'groomMRatio', 'Width', 'Split12', 'Split23', 'C2', 'D2', 'Tau32', 'Tau21', 'Qw', 'EMFracCaloBased', 'EM3FracCaloBased', 'Tile0FracCaloBased', 'EffNClustsCaloBased', 'NeutralEFrac', 'ChargePTFrac', 'ChargeMFrac', 'averageMu', 'NPV']
-log_scales = [True, True, False, False, False, True, True, False, True, False, False, True, False, False, False, False, False, False, False, True, True]
+# keys_current = ['E', 'mass', 'rap', 'groomMRatio', 'Width', 'Split12', 'Split23', 'C2', 'D2', 'Tau32', 'Tau21', 'Qw', 'EMFracCaloBased', 'EM3FracCaloBased', 'Tile0FracCaloBased', 'EffNClustsCaloBased', 'NeutralEFrac', 'ChargePTFrac', 'ChargeMFrac', 'averageMu', 'NPV']
+keys_current = [
+    'E_{\\text{reco}}','m_{\\text{reco}}', '\\eta_{\\text{reco}}', '\\text{groomMRatio}_{\\text{reco}}', '\\text{Width}_{\\text{reco}}', 
+    '\\text{Split12}_{\\text{reco}}', '\\text{Split23}_{\\text{reco}}', '\\text{C2}_{\\text{reco}}', '\\text{D2}_{\\text{reco}}', '\\text{Tau32}_{\\text{reco}}',
+    '\\text{Tau21}_{\\text{reco}}', '\\text{Qw}_{\\text{reco}}', '\\text{EMFracCaloBased}_{\\text{reco}}', '\\text{EM3FracCaloBased}_{\\text{reco}}',
+    '\\text{Tile0FracCaloBased}_{\\text{reco}}', '\\text{EffNClustsCaloBased}_{\\text{reco}}', '\\text{NeutralEFrac}_{\\text{reco}}',
+    '\\text{ChargePTFrac}_{\\text{reco}}', '\\text{ChargeMFrac}_{\\text{reco}}', '\\text{averageMu}_{\\text{reco}}', '\\text{NPV}_{\\text{reco}}'
+]
+log_scales = [True, True, False, False, False, True, True, False, True, False, False, True, False, False, False, False, False, False, False, False, False]
 
 
 """
@@ -118,6 +127,12 @@ The plots help visualize:
 - Training convergence
 """
 
+# def get_fillbetween_values(values):
+#     return np.asanyarray([val for val in values[1:-1] for _ in range(2)])
+    
+# def get_fillbetween_edges(edges):
+#     return np.asarray([edges[0]] + [edg for edg in edges[1:-1] for _ in range(2)] + [edges[-1]])
+
 class Plotter():
     """
     Class for creating various analysis plots of model predictions.
@@ -139,9 +154,9 @@ class Plotter():
             test_predictions,
             test_inputs,
             test_targets,
-            samples,
-            log_likelihoods,
+            samples: SampleEvaluation,
             variable,
+            target_dim,
             train_inputs=None,
             train_targets=None,
             additional_test_inputs=None,
@@ -153,12 +168,12 @@ class Plotter():
         self.test_inputs = test_inputs.numpy()
         self.test_targets = test_targets.numpy()
 
-        self.samples = samples.numpy()
-        self.log_likelihoods = log_likelihoods.numpy()
+        self.samples = samples
 
-        self.n_samples = self.samples.shape[-1]
+        self.n_samples = self.samples.log_response_samples.shape[-1]
 
         self.variable = variable
+        self.target_dim = target_dim
 
         self.train_inputs = train_inputs
         self.train_targets = train_targets
@@ -168,6 +183,12 @@ class Plotter():
 
         self.keys_current = [keys_current[i] for i in range(len(keys_current)) if i not in skip_dims]
         self.log_scales = [log_scales[i] for i in range(len(log_scales)) if i not in skip_dims]
+
+        logging.info(f"Plotter has been created for {self.variable}")
+        logging.info(f"Test input: {self.test_inputs.shape[1]}, additional test input: {self.additional_test_inputs.shape[1]}")
+
+        assert len(self.keys_current) == self.test_inputs.shape[1]
+        assert len(self.log_scales) == self.test_inputs.shape[1]
 
     @torch.inference_mode()
     def plot_loss_history(self, name, train_loss, val_loss):
@@ -214,10 +235,11 @@ class Plotter():
 
         logging.info("Plotting r predictions")
 
-        logR_truth = self.test_targets.squeeze()
-        logR_pred_MC = self.samples.squeeze()
-        logR_pred_mean = self.samples.mean(axis=1)
-        logR_pred_max_likelihood = self.samples[np.arange(self.samples.shape[0]), np.argmax(self.log_likelihoods, axis=1)]
+        logR_truth = self.test_targets
+
+        logR_pred_MC = self.samples.log_response_samples[:, self.target_dim]
+        logR_pred_mean = self.samples.log_response_mean[:, self.target_dim]
+        logR_pred_max_likelihood = self.samples.log_response_mode[:, self.target_dim]
 
         logr_range = compute_range([logR_truth, logR_pred_MC], quantile=0.00001)
 
@@ -230,7 +252,7 @@ class Plotter():
         # ]
         labels = [
             'True',
-            'MC',
+            'Sampling',
             'Mean',
             'Mode',
         ]
@@ -252,28 +274,28 @@ class Plotter():
             colors     = colors_fig,
             showratios = showratios,
             ratioref   = 0,
-            xlabel     = 'Log Response $\\log_{10}(R_{\\text{%s}})$' % self.variable,
+            # xlabel     = 'Log Response $\\log_{10}(r_{\\text{%s}})$' % self.variable,
+            xlabel     = '$\\log_{10} r_{\\text{%s}}$' % self.variable,
             rlabel     = '$Pred/True$',
             xrange     = logr_range,
             ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]],
             logscales  = [False, True],
-            nbins      = 100,
+            # nbins      = 100,
+            nbins      = 50,
             # legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['upper right', 0.95, 0.95, None],
             legend     = ['lower center', 0.55, 0.05, None] if self.variable == "E" else ['lower center', 0.55, 0.05, None],
             atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
             ratio_line_styles=ratio_line_styles
         )
-        
 
         r_truth = 10**self.test_targets.squeeze()
-        r_pred_MC = 10**self.samples.squeeze()
-        r_pred_mean = (10**self.samples).mean(axis=1).squeeze()
-        max_likelihood_fixed = (self.log_likelihoods - self.samples).argmax(axis=1)
-        r_pred_max_likelihood_fixed = 10**self.samples[np.arange(self.samples.shape[0]), max_likelihood_fixed]
+        r_pred_MC = self.samples.response_samples[:, self.target_dim]
+        r_pred_mean = self.samples.response_mean[:, self.target_dim]
+        r_pred_max_likelihood = self.samples.response_mode[:, self.target_dim]
 
         r_range = compute_range([r_truth, r_pred_MC[:, 0]], quantile=0.00001)
 
-        data = [r_truth, r_pred_MC, r_pred_mean, r_pred_max_likelihood_fixed]
+        data = [r_truth, r_pred_MC, r_pred_mean, r_pred_max_likelihood]
         if self.plot_train:
             r_train = 10.**self.train_targets.squeeze()
             data.insert(1, r_train)
@@ -284,12 +306,14 @@ class Plotter():
             colors     = colors_fig,
             showratios = showratios,
             ratioref   = 0,
-            xlabel     = 'Response $R_{\\text{%s}}$' % self.variable,
+            # xlabel     = 'Response $r_{\\text{%s}}$' % self.variable,
+            xlabel     = '$r_{\\text{%s}}$' % self.variable,
             rlabel     = '$Pred/True$',
             xrange     = r_range,
             ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]],
             logscales  = [False, True],
-            nbins      = 100,
+            # nbins      = 100,
+            nbins      = 50,
             # legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['upper right', 0.95, 0.95, None],
             legend     = ['upper right', 0.95, 0.95, None],
             atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
@@ -309,54 +333,66 @@ class Plotter():
         logging.info("Plotting E_M predictions")
 
         r_truth = 10**self.test_targets.squeeze()
-        r_pred_MC = 10**self.samples.squeeze()
-        r_pred_mean = (10**self.samples).mean(axis=1).squeeze()
+        r_pred_MC = self.samples.response_samples[:, self.target_dim]
+        r_pred_mean = self.samples.response_mean[:, self.target_dim]
+        r_pred_mode = self.samples.response_mode[:, self.target_dim]
+        r_pred_jetmean = self.samples.response_jet_mean[:, self.target_dim]
+        r_pred_jetmode = self.samples.response_jet_mode[:, self.target_dim] 
+
         if self.plot_train:
             r_train = 10.**self.train_targets.squeeze()
-
-        max_likelihood_fixed = (self.log_likelihoods - self.samples).argmax(axis=1)
-        r_pred_max_likelihood_fixed = 10**self.samples[np.arange(self.samples.shape[0]), max_likelihood_fixed]
 
         if self.variable == "E":
             ins = self.test_inputs[:, 0]
             truth = (1./r_truth) * ins
+
             pred_MC = (1./r_pred_MC) * ins[:, np.newaxis]
+
             pred_mean = (1./r_pred_mean) * ins
-            pred_max_likelihood_fixed = (1./r_pred_max_likelihood_fixed) * ins
+            pred_mode = (1./r_pred_mode) * ins
+
+            pred_jetmean = (1./r_pred_jetmean) * ins
+            pred_jetmode = (1./r_pred_jetmode) * ins
+
             if self.plot_train:
                 train_ins = self.train_inputs[:, 0]
                 train = (1./r_train) * train_ins
 
-            range = [np.min(truth)-100, np.quantile(truth, 0.999999)]
             # labels = ['$E_{\\text{true}}$',
             #           '$E_{\\text{pred}}$ MC',
             #           '$E_{\\text{pred}}$ Mean',
             #           '$E_{\\text{pred}}$ Mode',
             #           ]
         else:
-            truth = (1./r_truth) * self.test_inputs[:, 1]
             ins = self.test_inputs[:, 1]
+            truth = (1./r_truth) * self.test_inputs[:, 1]
+            
             pred_MC = (1./r_pred_MC) * ins[:, np.newaxis]
+
             pred_mean = (1./r_pred_mean) * ins
-            pred_max_likelihood_fixed = (1./r_pred_max_likelihood_fixed) * ins
+            pred_mode = (1./r_pred_mode) * ins
+
+            pred_jetmean = (1./r_pred_jetmean) * ins
+            pred_jetmode = (1./r_pred_jetmode) * ins
+
             if self.plot_train:
                 train_ins = self.train_inputs[:, 1]
                 train = (1./r_train) * train_ins
 
-            range = [np.min(truth)- 100, np.quantile(truth, 0.99999)]
+            
             # labels = ['$m_{\\text{true}}$',
             #           '$m_{\\text{pred}}$ MC',
             #           '$m_{\\text{pred}}$ Mean',
             #           '$m_{\\text{pred}}$ Mode',
             #           ]
-        
+
         labels = [
             'True',
-            'MC',
+            'Sampling',
             'Mean',
             'Mode',
         ]
-        data = [truth, pred_MC, pred_mean, pred_max_likelihood_fixed]
+        data = [truth, pred_MC, pred_mean, pred_mode]
         colors_fig = [colors['bk'], colors['bl'], colors['rd'], colors['gn']]
         showratios=[False, True, True, True]
         ratio_line_styles = ["-", "-", "-", "-"]
@@ -367,50 +403,99 @@ class Plotter():
             labels.insert(1, 'Train')
             ratio_line_styles.insert(1, "--")
 
+        range = [max(np.min(truth)-100, 1), np.quantile(truth, 0.99999)]
+        logging.info(f"{self.variable} range: {range}")
+
         fig1, axs =  make_hist_1dim_ratio(
             data       = data,
             labels     = labels,
             colors     = colors_fig,
             showratios = showratios,
             ratioref   = 0,
-            xlabel     = "Jet Energy $E$" if self.variable == "E" else "Jet mass $m$",
+            xlabel     = "Jet Energy $E$ [GeV]" if self.variable == "E" else "Jet mass $m$ [GeV]",
             rlabel     = "$Pred/True$",
             xrange     = range,
-            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]],
-            logscales  = [False, True],
-            nbins      = 100,
-            legend     = ['lower center', 0.65, 0.05, None],
+            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]] if self.variable != "E" else [[], []],
+            logscales  = [False, self.variable != "E"],
+            # nbins      = 100,
+            nbins      = 50,
+            # legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['lower right', 0., 0., None],
+            legend     = ['upper right', 0.95, 0.95, None] if self.variable == "E" else ['lower left', 0.2, 0.05, None],
             atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
             ratio_line_styles=ratio_line_styles,
             ratio_ylims=(0.9, 1.1),
             ratio_yticks=[0.9, 0.95, 1.0, 1.05, 1.1]
         )
 
-        truth = np.log10(truth)
-        pred_MC = np.log10(pred_MC)
-        pred_mean = np.log10(pred_mean)
-        pred_max_likelihood_fixed = np.log10(pred_max_likelihood_fixed)
+        labels2 = [
+            'True',
+            'Sampling',
+            'Jet Mean',
+            'Jet Mode',
+        ]
 
-        range = compute_range([truth, pred_MC], quantile=0.00001)
-
-        data = [truth, pred_MC, pred_mean, pred_max_likelihood_fixed]
+        data2 = [truth, pred_MC, pred_jetmean, pred_jetmode]
         if self.plot_train:
-            train = np.log10(train)
-            data.insert(1, train)
+            data2.insert(1, train)
+            labels2.insert(1, 'Train')
 
-        fig2, axs2 =  make_hist_1dim_ratio(
+        fig2, axs =  make_hist_1dim_ratio(
+            data       = data2,
+            labels     = labels2,
+            colors     = colors_fig,
+            showratios = showratios,
+            ratioref   = 0,
+            xlabel     = "Jet Energy $E$ [GeV]" if self.variable == "E" else "Jet mass $m$ [GeV]",
+            rlabel     = "$Pred/True$",
+            xrange     = range,
+            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]] if self.variable != "E" else [[], []],
+            logscales  = [False, self.variable != "E"],
+            # nbins      = 100,
+            nbins      = 50,
+            legend     = ['upper right', 0.95, 0.95, None] if self.variable == "E" else ['lower left', 0.2, 0.05, None],
+            atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
+            ratio_line_styles=ratio_line_styles,
+            ratio_ylims=(0.9, 1.1),
+            ratio_yticks=[0.9, 0.95, 1.0, 1.05, 1.1]
+        )
+
+        range = [max(0.9 * np.min(truth), 1), np.quantile(truth, 0.99999)]
+        logging.info(f"{self.variable} range: {range}")
+
+        fig3, axs2 =  make_hist_1dim_ratio(
             data       = data,
             labels     = labels,
             colors     = colors_fig,
             showratios = showratios,
             ratioref   = 0,
-            xlabel     = "Jet Energy $\\log_{10} E$" if self.variable == "E" else "Jet mass $\\log_{10} m$",
+            xlabel     = "Jet Energy $E$ [GeV]" if self.variable == "E" else "Jet mass $m$ [GeV]",
             rlabel     = '$Pred/True$',
             xrange     = range,
-            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]],
-            logscales  = [False, True],
-            nbins      = 100,
-            legend     = ['lower center', 0.55, 0.05, None], # ['upper right', 0.95, 0.95, None],
+            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]] if self.variable != "E" else [[], []],
+            logscales  = [True, self.variable != "E"],
+            # nbins      = 100,
+            nbins      = 50,
+            legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['lower left', 0.2, 0.05, None],
+            atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
+            ratio_line_styles = ratio_line_styles,
+            ratio_ylims=(0.9, 1.1),
+            ratio_yticks=[0.9, 0.95, 1.0, 1.05, 1.1]
+        )
+
+        fig4, axs2 =  make_hist_1dim_ratio(
+            data       = data2,
+            labels     = labels2,
+            colors     = colors_fig,
+            showratios = showratios,
+            ratioref   = 0,
+            xlabel     = "Jet Energy $E$ [GeV]" if self.variable == "E" else "Jet mass $m$ [GeV]",
+            rlabel     = '$Pred/True$',
+            xrange     = range,
+            ticks      = [[], [1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]] if self.variable != "E" else [[], []],
+            logscales  = [True, self.variable != "E"],
+            # nbins      = 100,
+            nbins      = 50,
+            legend     = ['lower center', 0.65, 0.05, None] if self.variable == "E" else ['lower left', 0.2, 0.05, None],
             atlas_info = [0.04, 0.95, 'four-lines', 'left', 'top', 'none'],
             ratio_line_styles = ratio_line_styles,
             ratio_ylims=(0.9, 1.1),
@@ -420,29 +505,28 @@ class Plotter():
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
             pdf.savefig(fig1)
             pdf.savefig(fig2)
+            pdf.savefig(fig3)
+            pdf.savefig(fig4)
         plt.close(fig1)
         plt.close(fig2)
+        plt.close(fig3)
+        plt.close(fig4)
 
     @torch.inference_mode()
     def E_M_predictions_input_histogram(self, name):
         logging.info("Plotting E_M predictions input")
 
         r_truth = 10**self.test_targets
-        r_pred_MC = 10**self.samples
-        r_pred_mean = (10**self.samples).mean(axis=1)
-
-        max_likelihood_fixed = (self.log_likelihoods - self.samples).argmax(axis=1)
-        r_pred_max_likelihood_fixed = 10**self.samples[np.arange(self.samples.shape[0]), max_likelihood_fixed]
-
+        
         if self.variable == "E":
             input_data = self.test_inputs[:, 0]
         else:
             input_data = self.test_inputs[:, 1]
 
         jet_truth = input_data / r_truth
-        jet_MC = (1. / r_pred_MC) * input_data[:, None]
-        jet_mean = input_data / r_pred_mean
-        jet_mode = input_data / r_pred_max_likelihood_fixed
+        jet_MC = (1. / self.samples.response_samples[:, self.target_dim]) * input_data[:, None]
+        jet_mean = input_data / self.samples.response_mean[:, self.target_dim]
+        jet_mode = input_data / self.samples.response_mode[:, self.target_dim]
 
         # assert np.isnan(jet_truth).any() == False, "Jet truth contais NaN"
         # assert np.isnan(jet_MC).any() == False, "Jet MC contais NaN"
@@ -451,7 +535,8 @@ class Plotter():
 
         full_features = np.concatenate([self.test_inputs, self.additional_test_inputs], axis=1)
         
-        _keys_current = [f"\\text{{ {key} }}" for key in self.keys_current] + ["p_T", "\\eta"]
+        # _keys_current = [f"\\text{{ {key} }}" for key in self.keys_current] + ["p_T", "\\eta"]
+        _keys_current = [key for key in self.keys_current] + ["p_T", "\\eta"]
         _log_scales = self.log_scales + [True, False]
 
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
@@ -545,7 +630,7 @@ class Plotter():
                 
                 hist = axs[0].pcolormesh(xedges, yedges, hist_target.T, norm=mpl.colors.LogNorm(vmin=vmin, vmax=vmax), rasterized=True)
                 if True:
-                    axs[0].set_ylabel(f"$\\log_{{ 10 }} \\text{{ {self.variable} }}$")
+                    axs[0].set_ylabel(f"$\\log_{{ 10 }} \\text{{ {self.variable} }}_{{ \\text{{ reco }} }}$")
                 else:
                     axs[0].set_ylabel(f"{self.variable}")
                 axs[0].set_title("True")
@@ -588,19 +673,21 @@ class Plotter():
                 pdf.savefig(fig)
                 plt.close(fig)
 
-
     @torch.inference_mode()
     def r_2d_histogram(self, name):
         """Create 2D histograms comparing true vs predicted response values."""
+
+        logging.info("Plotting r_2d_histogram")
+
         r_truth = self.test_targets.squeeze()            
 
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
-            r_pred = self.samples[:, 0].squeeze()
+            r_pred = self.samples.log_response_samples[:, self.target_dim, 0].squeeze()
             r_range = compute_range([r_truth, r_pred], quantile=0.00001)
-            label = 'Model $\\log(R_%s)$ Post. MC' % self.variable
+            label = 'Model $\\log(r_%s)$ Post. MC' % self.variable
             fig, ax = make_hist_2dim(
                 data       = [r_truth, r_pred],
-                labels     = ['True $\\log(R_%s)$' % self.variable,
+                labels     = ['True $\\log(r_%s)$' % self.variable,
                             label],
                 ranges     = [r_range, r_range],
                 ticks      = [[],
@@ -610,11 +697,11 @@ class Plotter():
                 atlas_info = [0.96, 0.05, 'three-lines', 'right', 'bottom', 'none'])
             pdf.savefig(fig)
             plt.close(fig)
-            r_pred = self.samples.mean(axis=1).squeeze()
-            label = 'Model $\\log(R_%s)$ Post. Mean' % self.variable
+            r_pred = self.samples.log_response_mean[:, self.target_dim].squeeze()
+            label = 'Model $\\log(r_%s)$ Post. Mean' % self.variable
             fig, ax = make_hist_2dim(
                 data       = [r_truth, r_pred],
-                labels     = ['True $\\log(R_%s)$' % self.variable,
+                labels     = ['True $\\log(r_%s)$' % self.variable,
                             label],
                 ranges     = [r_range, r_range],
                 ticks      = [[],
@@ -624,11 +711,11 @@ class Plotter():
                 atlas_info = [0.96, 0.05, 'three-lines', 'right', 'bottom', 'none'])
             pdf.savefig(fig)
             plt.close(fig)
-            r_pred = self.samples[np.arange(self.samples.shape[0]), np.argmax(self.log_likelihoods, axis=1)].squeeze()
-            label = 'Model $\\log(R_%s)$ Post. Maximum' % self.variable
+            r_pred = self.samples.log_response_mode[:, self.target_dim]
+            label = 'Model $\\log(r_%s)$ Post. Maximum' % self.variable
             fig, ax = make_hist_2dim(
                 data       = [r_truth, r_pred],
-                labels     = ['True $\\log(R_%s)$' % self.variable,
+                labels     = ['True $\\log(r_%s)$' % self.variable,
                             label],
                 ranges     = [r_range, r_range],
                 ticks      = [[],
@@ -646,8 +733,9 @@ class Plotter():
         variable = self.variable
 
         r_truth = 10**self.test_targets.squeeze()
-        r_pred_MC = 10**self.samples.squeeze()[:, 0]
-        r_pred_mean = (10**self.samples).mean(axis=1).squeeze()
+        
+        r_pred_MC = self.samples.response_samples[:, self.target_dim, 0]
+        r_pred_mean = self.samples.response_mean[:, self.target_dim]
 
         if variable == "E":
             ins = self.test_inputs[:, 0]
@@ -692,11 +780,12 @@ class Plotter():
         logging.info("Plotting prediction inputs histogram")
 
         r_truth = 10**self.test_targets.squeeze()
-        r_pred = 10**self.samples.squeeze()
+        r_pred = self.samples.response_samples[:, self.target_dim]
 
         full_features = np.concatenate([self.test_inputs, self.additional_test_inputs], axis=1)
         
-        _keys_current = [f"\\text{{ {key} }}" for key in self.keys_current] + ["p_T", "\\eta"]
+        # _keys_current = [f"\\text{{ {key} }}" for key in self.keys_current] + ["p_T", "\\eta"]
+        _keys_current = [key for key in self.keys_current] + ["p_{T, \\text{true}}", "\\eta_{\\text{true}}"]
         _log_scales = self.log_scales + [True, False]
 
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
@@ -746,7 +835,7 @@ class Plotter():
                 cbar.ax.tick_params(axis='y', which='both', direction='out')
 
                 axs[0].set_xlabel(f"${_keys_current[feature]}$")
-                axs[0].set_ylabel("True response $R$")
+                axs[0].set_ylabel(f"True response $r_{self.variable}$")
 
                 if _log_scales[feature] and False:
                     axs[0].set_xscale('log')
@@ -766,7 +855,7 @@ class Plotter():
                 cbar.ax.tick_params(axis='y', which='both', direction='out')
 
                 axs[1].set_xlabel(f"${_keys_current[feature]}$")
-                axs[1].set_ylabel("Predicted response $R$")
+                axs[1].set_ylabel(f"Predicted response $r_{self.variable}$")
 
                 if _log_scales[feature] and False:
                     axs[1].set_xscale('log')
@@ -789,83 +878,180 @@ class Plotter():
         logging.info("Plotting marginalized input-prediction histograms")
 
         r_truth = 10**self.test_targets.squeeze()
-        r_pred = 10**self.samples.squeeze()
+        r_pred = self.samples.response_samples[:, self.target_dim]
 
-        loglikelihoods = self.log_likelihoods# / r_pred
-        maximum_likelihood_index = np.argmax(loglikelihoods, axis=1)
-        maximum_likelihood_r = r_pred[np.arange(r_pred.shape[0]), maximum_likelihood_index]
+        full_features = np.concatenate([self.test_inputs, self.additional_test_inputs], axis=1)
+        
+        # _keys_current = [f"\\text{{ {key} }}" for key in self.keys_current] + ["p_T", "\\eta"]
+        _keys_current = [key for key in self.keys_current] + ["p_{T, \\text{true}}", "\\eta_{\\text{true}}"]
+        _log_scales = self.log_scales + [True, False]
 
         with PdfPages(os.path.join(self.plot_dir, name)) as pdf:
 
-            for feature in range(self.test_inputs.shape[1]):
+            # for feature in range(self.test_inputs.shape[1]):
+            for feature in range(full_features.shape[1]):
 
-                input_data = self.test_inputs[:, feature]
+                logging.info(f"Plotting marginalized plot for the feature {_keys_current[feature]}")
+
+                # input_data = self.test_inputs[:, feature]
+                input_data = full_features[:, feature]
 
                 xmin = np.quantile(input_data, 0.001)
                 xmax = np.quantile(input_data, 0.999)
                 xbin = 50
-                if log_scales[feature] and False:
+                
+                if _log_scales[feature]:
                     xedges = np.logspace(np.log10(xmin), np.log10(xmax), xbin+1)
                 else: 
                     xedges = np.linspace(xmin, xmax, xbin+1)
 
                 median_target, _, _ = binned_statistic(input_data, r_truth, statistic='median', bins=xedges)
 
-                median_samples = []
-                for sample in range(self.n_samples):
-                    median_sample, _, _ = binned_statistic(input_data, r_pred[:, sample], statistic='median', bins=xedges)
-                    median_samples.append(median_sample)
+                # DS: I think this is a fake uncertainty
+                # median_samples = []
+                # for sample in range(self.n_samples):
+                #     median_sample, _, _ = binned_statistic(input_data, r_pred[:, sample], statistic='median', bins=xedges)
+                #     median_samples.append(median_sample)
+                # median_samples_mean = np.mean(np.array(median_samples), axis=0)
+                # median_samples_std = np.std(np.array(median_samples), axis=0)
+                median_samples, _, _ = binned_statistic(np.broadcast_to(input_data[..., None], r_pred.shape).flatten(), r_pred.flatten(), statistic='median', bins=xedges)
 
-                median_samples_mean = np.mean(np.array(median_samples), axis=0)
-                median_samples_std = np.std(np.array(median_samples), axis=0)
+                # posterior_mean = np.mean(r_pred, axis=1)
+                # median_posteriormean, _, _ = binned_statistic(input_data, posterior_mean, statistic='median', bins=xedges)
+                median_posteriormean, _, _ = binned_statistic(input_data, self.samples.response_mean[:, self.target_dim], statistic='median', bins=xedges)
 
-                posterior_mean = np.mean(r_pred, axis=1)
-                median_posteriormean, _, _ = binned_statistic(input_data, posterior_mean, statistic='median', bins=xedges)
+                # posterior_median = np.median(r_pred, axis=1)
+                # median_posteriormedian, _, _ = binned_statistic(input_data, posterior_median, statistic='median', bins=xedges)
+                # median_posteriormedian, _, _ = binned_statistic(input_data, self.samples.response_median, statistic='median', bins=xedges)
 
-                posterior_median = np.median(r_pred, axis=1)
-                median_posteriormedian, _, _ = binned_statistic(input_data, posterior_median, statistic='median', bins=xedges)
-
-                median_posteriormaximum, _, _ = binned_statistic(input_data, maximum_likelihood_r, statistic='median', bins=xedges)
+                median_posteriormaximum, _, _ = binned_statistic(input_data, self.samples.response_mode[:, self.target_dim], statistic='median', bins=xedges)
 
                 bin_centers = (xedges[:-1] + xedges[1:]) / 2
-                ymin, ymax = np.min(median_target)-0.1, np.max(median_target)+0.1
+                # ymin, ymax = np.min(median_target)-0.1, np.max(median_target)+0.1
+                # ymin, ymax = np.min(median_target), np.max(median_target)
+                # ymin, ymax = np.min(median_samples_mean - median_samples_std), np.max(median_samples_mean + median_samples_std)
+                ymin, ymax = np.min(median_samples), np.max(median_samples)
+                ydiff = ymax - ymin
+                ymin = ymin - 0.1 * ydiff
+                ymax = ymax + 0.1 * ydiff
 
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figs_ratio, sharex=True, gridspec_kw={'height_ratios': [3,1]})
                 fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=rect_ratio)
                 fig.subplots_adjust(hspace=0.07)
 
                 # Top panel
-                ax1.step(bin_centers, median_target, color=colors['bk'], label='True $R$')
-                ax1.step(bin_centers, median_samples_mean, color=colors['bl'], label='$R$ Sampled')
-                ax1.step(bin_centers, median_posteriormean, color=colors['rd'], label='$R$ Post. Mean')
-                ax1.step(bin_centers, median_posteriormedian, color=colors['gn'], label='$R$ Post. Median')
-                ax1.step(bin_centers, median_posteriormaximum, color=colors['br'], label='$R$ Post. Maximum')
-                ax1.fill_between(bin_centers, median_samples_mean - median_samples_std, median_samples_mean + median_samples_std, color=colors['bl'], alpha=0.4, step='pre')
-                ax1.set_ylabel('Bin Median $R$')
+                # lt = ax1.step(bin_centers, median_target, color=colors['bk']) # , label=f"True $r_{self.variable}$")
+                # ls = ax1.step(bin_centers, median_samples_mean, color=colors['bl']) # , label=f"$r_{self.variable}$ Sampled")
+                # lmean = ax1.step(bin_centers, median_posteriormean, color=colors['rd']) # , label=f"$r_{self.variable}$ Mean")
+                # # ax1.step(bin_centers, median_posteriormedian, color=colors['gn'], label=f"$r_{self.variable}$ Post. Median")
+                # lmode = ax1.step(bin_centers, median_posteriormaximum, color=colors['gn']) # , label=f"$r_{self.variable}$ Mode")
+                # ls_unc = ax1.fill_between(bin_centers, median_samples_mean - median_samples_std, median_samples_mean + median_samples_std, color=colors['bl'], alpha=0.4, step='pre')
+
+                lt = ax1.stairs(median_target, edges=xedges, color=colors['bk']) # , label=f"True $r_{self.variable}$")
+                # ls = ax1.stairs(median_samples_mean, edges=xedges, color=colors['bl']) # , label=f"$r_{self.variable}$ Sampled")
+                ls = ax1.stairs(median_samples, edges=xedges, color=colors['bl']) # , label=f"$r_{self.variable}$ Sampled")
+                lmean = ax1.stairs(median_posteriormean, edges=xedges, color=colors['rd']) # , label=f"$r_{self.variable}$ Mean")
+                lmode = ax1.stairs(median_posteriormaximum, edges=xedges, color=colors['gn']) # , label=f"$r_{self.variable}$ Mode")
+                # ls_unc = ax1.fill_between(
+                #     get_fillbetween_edges(xedges),
+                #     get_fillbetween_values(median_samples_mean - median_samples_std),
+                #     get_fillbetween_values(median_samples_mean + median_samples_std),
+                #     color=colors['bl'], alpha=0.4, step='pre'
+                # )
+                # ls_unc = ax1.fill_between(
+                #     xedges,
+                #     dup_last(median_samples_mean - median_samples_std),
+                #     dup_last(median_samples_mean + median_samples_std),
+                #     color=colors['bl'], alpha=0.4, step='post'
+                # )
+                
+                legend_linewidth = 4
+                handles = [
+                    matplotlib.lines.Line2D([], [], color=lt.get_edgecolor(), linewidth=legend_linewidth),
+                    # (matplotlib.lines.Line2D([], [], color=ls.get_edgecolor(), linewidth=legend_linewidth), ls_unc),
+                    matplotlib.lines.Line2D([], [], color=ls.get_edgecolor(), linewidth=legend_linewidth),
+                    matplotlib.lines.Line2D([], [], color=lmean.get_edgecolor(), linewidth=legend_linewidth),
+                    matplotlib.lines.Line2D([], [], color=lmode.get_edgecolor(), linewidth=legend_linewidth)
+                ]
+                labels = [
+                    f"True $r_{self.variable}$",
+                    f"$r_{self.variable}$ Sampled",
+                    f"$r_{self.variable}$ Mean",
+                    f"$r_{self.variable}$ Mode"
+                ]
+
+                ax1.set_ylabel(f'Bin Median $r_{self.variable}$')
                 ax1.set_xlim((xmin, xmax))
                 ax1.set_ylim((ymin, ymax))  
-                if log_scales[feature] and False:
+                if _log_scales[feature]:
                     ax1.set_xscale('log')
-                ax1.legend(borderpad=0.4)
+                # ax1.legend(borderpad=0.4)
+                # ax1.legend(loc="best")
+                ax1.legend(handles=handles, labels=labels, loc="best")
+                
                 ax1.yaxis.set_minor_locator(mpl.ticker.MultipleLocator(0.05))
 
                 # Bottom ratio panel
-                ratio_samples = median_samples_mean / median_target
+                # ratio_samples = median_samples_mean / median_target
+                ratio_samples = median_samples / median_target
                 ratio_posteriormean = median_posteriormean / median_target
-                ratio_posteriormedian = median_posteriormedian / median_target
+                # ratio_posteriormedian = median_posteriormedian / median_target
                 ratio_posteriormaximum = median_posteriormaximum / median_target
-                ax2.step(bin_centers, ratio_samples, color=colors['bl'])
-                ax2.step(bin_centers, ratio_posteriormean, color=colors['rd'])
-                ax2.step(bin_centers, ratio_posteriormedian, color=colors['gn'])
-                ax2.step(bin_centers, ratio_posteriormaximum, color=colors['br'])
-                ax2.fill_between(bin_centers, ratio_samples - median_samples_std / median_target, ratio_samples + median_samples_std / median_target, color=colors['bl'], alpha=0.4, step='pre')
+                
+                # ax2.step(bin_centers, ratio_samples, color=colors['bl'])
+                # ax2.step(bin_centers, ratio_posteriormean, color=colors['rd'])
+                # # ax2.step(bin_centers, ratio_posteriormedian, color=colors['gn'])
+                # ax2.step(bin_centers, ratio_posteriormaximum, color=colors['br'])
+                # ax2.fill_between(bin_centers, ratio_samples - median_samples_std / median_target, ratio_samples + median_samples_std / median_target, color=colors['bl'], alpha=0.4, step='pre')
+                # ax2.axhline(1.0, color='black', linestyle='dashed')
+                
+                ax2.stairs(ratio_samples, edges=xedges, color=colors['bl'])
+                ax2.stairs(ratio_posteriormean, edges=xedges, color=colors['rd'])
+                ax2.stairs(ratio_posteriormaximum, edges=xedges, color=colors['br'])
+                # ax2.fill_between(
+                #     get_fillbetween_edges(bin_centers),
+                #     get_fillbetween_values(ratio_samples - median_samples_std / median_target),
+                #     get_fillbetween_values(ratio_samples + median_samples_std / median_target),
+                #     color=colors['bl'], alpha=0.4, step='pre'
+                # )
+                # ax2.fill_between(
+                #     xedges,
+                #     dup_last(ratio_samples - median_samples_std / median_target),
+                #     dup_last(ratio_samples + median_samples_std / median_target),
+                #     color=colors['bl'], alpha=0.4, step='post'
+                # )
                 ax2.axhline(1.0, color='black', linestyle='dashed')
-                ax2.set_xlabel(keys_current[feature])
+        
+                
+                # ax2.set_xlabel(keys_current[feature])
+                # ax2.set_xlabel(f"${_keys_current[feature]}$")
+
+                # if _log_scales[feature]:
+                #     ax2.set_xlabel(f"$\\log_{{ 10 }} {_keys_current[feature]}$")
+                # else:
+                #     ax2.set_xlabel(f"${_keys_current[feature]}$")
+                ax2.set_xlabel(f"${_keys_current[feature]}$")
+
                 ax2.set_ylabel('Ratio')
-                if log_scales[feature] and False:
+                if _log_scales[feature]:
                     ax2.set_xscale('log')   
                 # ax2.set_ylim(0.95, 1.05)
-                ax2.set_ylim(0.985, 1.015)
+                # ax2.set_ylim(0.99, 1.01)
+
+                # ratio_ymax = np.max(ratio_samples + median_samples_std / median_target)
+                # ratio_ymin = np.min(ratio_samples - median_samples_std / median_target)
+                ratio_ymax = np.max(ratio_samples)
+                ratio_ymin = np.min(ratio_samples)
+                ratio_diff = ratio_ymax - ratio_ymin
+                ratio_ymax += 0.5 * ratio_diff
+                ratio_ymin -= 0.5 * ratio_diff
+                # ratio_diff_up = max(0.0001, ratio_ymax - 1.)
+                # ratio_diff_down = max(0.0001, 1. - ratio_ymin)
+                # ratio_ymax += 0.5 * ratio_diff_up
+                # ratio_ymin -= 0.5 * ratio_diff_down
+
+                ax2.set_ylim(ratio_ymin, ratio_ymax)
+
                 ax2.yaxis.set_minor_locator(mpl.ticker.MultipleLocator(0.01))
 
                 plt.tight_layout()
@@ -876,7 +1062,7 @@ class Plotter():
     def plot_standard_deviations(self, name):
         """Plot distributions of prediction standard deviations."""
         r_truth = 10**self.test_targets.squeeze()
-        r_pred = 10**self.samples.squeeze()
+        r_pred = self.samples.response_samples[:, self.target_dim]
         r_pred_std = np.std(r_pred, axis=1)
         r_pred_mean = np.mean(r_pred, axis=1)
 
@@ -930,9 +1116,10 @@ class Plotter():
         logging.info("Plotting r relative over input")
 
         R_truth = 10.**self.test_targets
-        R_pred_MC = 10.**self.samples.squeeze()
-        R_pred_mean = 10.**self.samples.mean(axis=1)
-        R_pred_max_likelihood = 10.**self.samples[np.arange(self.samples.shape[0]), np.argmax(self.log_likelihoods, axis=1)]
+        
+        R_pred_MC = self.samples.response_samples[:, self.target_dim]
+        R_pred_mean = self.samples.response_mean[:, self.target_dim]
+        R_pred_max_likelihood = self.samples.response_mode[:, self.target_dim]
 
         ratio_MC = (R_truth / R_pred_MC.T).T
         ratio_mean = R_truth / R_pred_mean
@@ -1063,12 +1250,18 @@ def make_hist_1dim_ratio(data, labels, colors, showratios, ratioref, xlabel, rla
             hists_err.append(np.sqrt(hists[-1]))
             logging.info(f"Computing {labels[i]} uncertainty via Poisson")
         else:
-            hists_model = np.array([np.histogram(model, bins=bins)[0] for model in dataset.T])
-            hist_model_mean = np.mean(hists_model, axis=0)
-            hist_model_std = np.std(hists_model, axis=0)
-            hists.append(hist_model_mean)
-            hists_err.append(hist_model_std)
-            logging.info(f"Computing {labels[i]} uncertainty via std")
+            # DS: I am pretty sure that this is a fake uncertainty
+            # hists_model = np.array([np.histogram(model, bins=bins)[0] for model in dataset.T])
+            # hist_model_mean = np.mean(hists_model, axis=0)
+            # hist_model_std = np.std(hists_model, axis=0)
+            # hists.append(hist_model_mean)
+            # hists_err.append(hist_model_std)
+            # logging.info(f"Computing {labels[i]} uncertainty via std")
+            
+            _dataset = dataset.flatten()
+            hists.append(np.histogram(_dataset, bins=bins)[0])
+            hists_err.append(np.sqrt(hists[-1]))
+            logging.info(f"Computing {labels[i]} uncertainty via Poisson")
 
     if len(integrals) == 0: 
         integrals =  [np.sum(y_avg) for y_avg in hists]
@@ -1115,7 +1308,8 @@ def make_hist_1dim_ratio(data, labels, colors, showratios, ratioref, xlabel, rla
     axs[1].axhline(1.00, zorder=0, linestyle='dashed', color='black')
     axs[1].axhline(0.50, zorder=0, linestyle='dotted', color='grey')
     axs[1].set_xlabel(xlabel)
-    axs[0].set_ylabel('Relative entries')
+    # axs[0].set_ylabel('Relative entries')
+    axs[0].set_ylabel('Normalized counts')
     axs[1].set_ylabel(rlabel, loc='center')
     axs[0].set_xlim((bins[0], bins[-1]))
     axs[1].set_ylim(ratio_ylims)
@@ -1326,22 +1520,21 @@ def make_hist_2dim_ratio(data, data_ref, labels, ranges, ticks=[[], []], logscal
 
 
 
-def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, train_targets=None):
-    # logging.info(f"targets: {targets}")
+def plot_pred_correlation(name, targets, samples: SampleEvaluation, plot_dir, train_targets):
     logging.info("Plotting joint r correlations")
 
-    samples_E = samples[:, 0]
-    samples_m = samples[:, 1]
+    # samples_E = samples[:, 0]
+    # samples_m = samples[:, 1]
 
-    logR_pred_MC_E = samples_E.reshape(-1)
-    logR_pred_median_E, _ = samples_E.median(dim=1)
-    logR_pred_mean_E = samples_E.mean(dim=1)
-    logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
+    # logR_pred_MC_E = samples_E.reshape(-1)
+    # logR_pred_median_E, _ = samples_E.median(dim=1)
+    # logR_pred_mean_E = samples_E.mean(dim=1)
+    # logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
 
-    logR_pred_MC_m = samples_m.reshape(-1)
-    logR_pred_median_m, _ = samples_m.median(dim=1)
-    logR_pred_mean_m = samples_m.mean(dim=1)
-    logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
+    # logR_pred_MC_m = samples_m.reshape(-1)
+    # logR_pred_median_m, _ = samples_m.median(dim=1)
+    # logR_pred_mean_m = samples_m.mean(dim=1)
+    # logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
 
     targets_E = targets[:, 0]
     targets_m = targets[:, 1]
@@ -1351,10 +1544,23 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
     # min_values_m = min(min(logR_pred_MC_m.tolist()), min(targets_m.tolist()))
     # max_values_m = max(max(logR_pred_MC_m.tolist()), max(targets_m.tolist()))
 
-    min_values_E = min(targets_E.tolist())
-    max_values_E = max(targets_E.tolist())
-    min_values_m = min(targets_m.tolist())
-    max_values_m = max(targets_m.tolist())
+    min_values_E_log = min(targets_E.tolist())
+    max_values_E_log = max(targets_E.tolist())
+    min_values_m_log = min(targets_m.tolist())
+    max_values_m_log = max(targets_m.tolist())
+
+    delta_E = max_values_E_log - min_values_E_log
+    delta_m = max_values_m_log - min_values_m_log
+
+    min_values_E_log = min_values_E_log - 0.05 * delta_E
+    min_values_m_log = min_values_m_log - 0.05 * delta_m
+    max_values_E_log = max_values_E_log + 0.05 * delta_E
+    max_values_m_log = max_values_m_log + 0.05 * delta_m
+
+    min_values_E = 10.**min(targets_E.tolist())
+    max_values_E = 10.**max(targets_E.tolist())
+    min_values_m = 10.**min(targets_m.tolist())
+    max_values_m = 10.**max(targets_m.tolist())
 
     delta_E = max_values_E - min_values_E
     delta_m = max_values_m - min_values_m
@@ -1364,20 +1570,30 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
     max_values_E = max_values_E + 0.05 * delta_E
     max_values_m = max_values_m + 0.05 * delta_m
 
+    targets_E = targets_E.numpy()
+    targets_m = targets_m.numpy()
+
+    # if train_targets != None:
+    train_targets = train_targets.numpy()
+
     with PdfPages(os.path.join(plot_dir, name)) as pdf:
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_median_E, logR_pred_median_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (targets_E, targets_m),
+                (samples.log_response_samples[:, 0], samples.log_response_samples[:, 1]),
+                (samples.log_response_median[:, 0], samples.log_response_median[:, 1]),
+                (samples.log_response_mean[:, 0], samples.log_response_mean[:, 1]),
+                (samples.log_response_mode[:, 0], samples.log_response_mode[:, 1])
             ],
             [
-                "Truth", "MC", "Median", "Mean", "Mode"
+                "Truth", "Samples", "Median", "Mean", "Mode"
             ]
         ):
             logging.info(f"Plotting 2d hist: {plot_title}")
             fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
+                data=[target_data_E, target_data_m],
                 labels=[r"$\text{log}_{10} r_E$", r"$\text{log}_{10} r_m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=False,
@@ -1390,28 +1606,31 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
             plt.close(fig)
 
         data_comparison = [
-            (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_median_E, logR_pred_median_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+            (samples.log_response_samples[:, 0], samples.log_response_samples[:, 1]),
+            (samples.log_response_median[:, 0], samples.log_response_median[:, 1]),
+            (samples.log_response_mean[:, 0], samples.log_response_mean[:, 1]),
+            (samples.log_response_mode[:, 0], samples.log_response_mode[:, 1])
         ]
         titles_comparison = [
-            "MC / True", "Median / True", "Mean / True", "Mode / True"
+            "Samples / True", "Median / True", "Mean / True", "Mode / True"
         ]
-        if train_targets != None:
-            data_comparison.append((train_targets[:, 0], train_targets[:, 1]))
-            titles_comparison.append("Train / True")
+        # if train_targets != None:
+        data_comparison.append((train_targets[:, 0], train_targets[:, 1]))
+        titles_comparison.append("Train / True")
 
-        data_E_ref = targets_E.numpy()
-        data_m_ref = targets_m.numpy()
+        data_E_ref = targets_E
+        data_m_ref = targets_m
 
         for (target_data_E, target_data_m), plot_title in zip(data_comparison, titles_comparison):
             logging.info(f"Plotting 2d relative hist: {plot_title}")
-            data_E = target_data_E.numpy()
-            data_m = target_data_m.numpy()
+            data_E = target_data_E
+            data_m = target_data_m
             
             fig, axs = make_hist_2dim_ratio(
                 data=[data_E, data_m],
                 data_ref=[data_E_ref, data_m_ref],
                 labels=[r"$\text{log}_{10} r_E$", r"$\text{log}_{10} r_m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 sigma_max=3
@@ -1423,14 +1642,14 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
 
         for (target_data_E, target_data_m), plot_title in zip(data_comparison, titles_comparison):
             logging.info(f"Plotting 2d relative hist: {plot_title}")
-            data_E = target_data_E.numpy()
-            data_m = target_data_m.numpy()
+            data_E = target_data_E
+            data_m = target_data_m
             
             fig, axs = make_hist_2dim_ratio(
                 data=[data_E, data_m],
                 data_ref=[data_E_ref, data_m_ref],
                 labels=[r"$\text{log}_{10} r_E$", r"$\text{log}_{10} r_m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 sigma_max=0.1
@@ -1440,35 +1659,34 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
             pdf.savefig(fig)
             plt.close(fig)
 
-        targets_E = 10.**targets_E
-        targets_m = 10.**targets_m
+        # targets_E = 10.**targets_E
+        # targets_m = 10.**targets_m
 
-        R_pred_MC_E = 10.**logR_pred_MC_E
-        R_pred_median_E = 10.**logR_pred_median_E
-        R_pred_mean_E = 10.**logR_pred_mean_E
-        R_pred_max_likelihood_E = 10.**logR_pred_max_likelihood_E
+        # R_pred_MC_E = 10.**logR_pred_MC_E
+        # R_pred_median_E = 10.**logR_pred_median_E
+        # R_pred_mean_E = 10.**logR_pred_mean_E
+        # R_pred_max_likelihood_E = 10.**logR_pred_max_likelihood_E
 
-        R_pred_MC_m = 10.**logR_pred_MC_m
-        R_pred_median_m = 10.**logR_pred_median_m
-        R_pred_mean_m = 10.**logR_pred_mean_m
-        R_pred_max_likelihood_m = 10.**logR_pred_max_likelihood_m
-
-        min_values_E = 10.**min_values_E
-        min_values_m = 10.**min_values_m
-        max_values_E = 10.**max_values_E
-        max_values_m = 10.**max_values_m
+        # R_pred_MC_m = 10.**logR_pred_MC_m
+        # R_pred_median_m = 10.**logR_pred_median_m
+        # R_pred_mean_m = 10.**logR_pred_mean_m
+        # R_pred_max_likelihood_m = 10.**logR_pred_max_likelihood_m
 
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (R_pred_MC_E, R_pred_MC_m), (R_pred_median_E, R_pred_median_m), (R_pred_mean_E, R_pred_mean_m), (R_pred_max_likelihood_E, R_pred_max_likelihood_m)
+                (targets_E, targets_m),
+                (samples.response_samples[:, 0], samples.response_samples[:, 1]),
+                (samples.response_median[:, 0], samples.response_median[:, 1]),
+                (samples.response_mean[:, 0], samples.response_mean[:, 1]),
+                (samples.response_mode[:, 0], samples.response_mode[:, 1])
             ],
             [
-                "Truth", "MC", "Median", "Mean", "Mode"
+                "Truth", "Samples", "Median", "Mean", "Mode"
             ]
         ):
             logging.info(f"Plotting 2d hist: {plot_title}")
             fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
+                data=[10.**target_data_E, 10.**target_data_m],
                 labels=[r"$r_E$", r"$r_m$"],
                 ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
                 showdiag=False,
@@ -1482,76 +1700,82 @@ def plot_pred_correlation(name, targets, samples, log_likelihoods, plot_dir, tra
             pdf.savefig(fig)
             plt.close(fig)
 
-        for (target_data_E, target_data_m), plot_title in zip(
-            [
-                (1./targets_E, 1./targets_m), (1./R_pred_MC_E, 1./R_pred_MC_m), (1./R_pred_median_E, 1./R_pred_median_m), (1./R_pred_mean_E, 1./R_pred_mean_m), (1./R_pred_max_likelihood_E, 1./R_pred_max_likelihood_m)
-            ],
-            [
-                "Truth", "MC", "Median", "Mean", "Mode"
-            ]
-        ):
-            logging.info(f"Plotting 2d hist: {plot_title}")
-            fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
-                labels=[r"$1/r_E$", r"$1/r_m$"],
-                ranges=[[1./max_values_E, 1./min_values_E], [1./max_values_m, 1./min_values_m]],
-                showdiag=False,
-                nbins=[100,100],
-                norm_columns=False,
-                norm_rows=False,
-                show_cbar_label=False
-            )
-            fig.suptitle(plot_title, y=0.9)
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+        # for (target_data_E, target_data_m), plot_title in zip(
+        #     [
+        #         (1./targets_E, 1./targets_m),
+        #         (1./samples.response_samples[:, 0], 1./samples.response_samples[:, 1]),
+        #         (1./samples.response_median[:, 0], 1./samples.response_median[:, 1]),
+        #         (1./samples.response_mean[:, 0], 1./samples.response_mean[:, 1]),
+        #         (1./samples.response_mode[:, 0], 1./samples.response_mode[:, 1])
+        #     ],
+        #     [
+        #         "Truth", "Samples", "Median", "Mean", "Mode"
+        #     ]
+        # ):
+        #     logging.info(f"Plotting 2d hist: {plot_title}")
+        #     fig, axs = make_hist_2dim(
+        #         data=[target_data_E, target_data_m],
+        #         labels=[r"$1/r_E$", r"$1/r_m$"],
+        #         ranges=[[1./max_values_E, 1./min_values_E], [1./max_values_m, 1./min_values_m]],
+        #         showdiag=False,
+        #         nbins=[100,100],
+        #         norm_columns=False,
+        #         norm_rows=False,
+        #         show_cbar_label=False
+        #     )
+        #     fig.suptitle(plot_title, y=0.9)
+        #     fig.tight_layout()
+        #     pdf.savefig(fig)
+        #     plt.close(fig)
 
-def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihoods, plot_dir, train_targets=None, train_input_data=None):
+def plot_pred_jet_correlation(name, targets, samples: SampleEvaluation, input_data, plot_dir, train_targets, train_input_data):
     logging.info("Plotting joint jet correlations")
-    targets = 10.**targets
-    r: torch.FloatTensor = 10**samples
 
     input_data: torch.FloatTensor = input_data[:, :2]
-    targets = input_data / targets
-    targets = torch.log10(targets)
-    targets_E = targets[:, 0]
-    targets_m = targets[:, 1]
 
-    if train_targets != None and train_input_data != None:
-        train_input_data: torch.FloatTensor = train_input_data[:, :2]
-        train_targets = 10.**train_targets
-        train_targets = train_input_data / train_targets
-        train_targets = torch.log10(train_targets)
-        train_targets_E = train_targets[:, 0]
-        train_targets_m = train_targets[:, 1]
-        # logging.info(f"test_targets: {targets.shape}, train_targets: {train_targets.shape}")
+    jet_targets = 10.**targets
+    jet_targets = input_data / jet_targets
+    
+    # if train_targets != None and train_input_data != None:
+    train_input_data: torch.FloatTensor = train_input_data[:, :2]
+    train_jet_targets = 10.**train_targets
+    train_jet_targets = train_input_data / train_jet_targets
+    train_jet_targets = train_jet_targets.numpy()
+    # logging.info(f"test_targets: {targets.shape}, train_targets: {train_targets.shape}")
 
-    input_data = input_data.unsqueeze(-1).expand(-1, -1, r.size(-1))
-    samples = input_data / r
-    samples = torch.log10(samples)
+    input_data_samples = input_data.unsqueeze(-1).expand(-1, -1, samples.response_samples.shape[-1]).numpy()
+    input_data = input_data.numpy()
 
-    samples_E = samples[:, 0]
-    samples_m = samples[:, 1]
 
-    logR_pred_MC_E = samples_E.reshape(-1)
-    logR_pred_median_E, _ = samples_E.median(dim=1)
-    logR_pred_mean_E = samples_E.mean(dim=1)
-    logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
+    
+    jet_samples = input_data_samples / samples.response_samples
+    jet_median = input_data / samples.response_median
+    jet_mean = input_data / samples.response_mean
+    jet_mode = input_data / samples.response_mode
+    jet_jetmean = input_data / samples.response_jet_mean
+    jet_jetmode = input_data / samples.response_jet_mode
 
-    logR_pred_MC_m = samples_m.reshape(-1)
-    logR_pred_median_m, _ = samples_m.median(dim=1)
-    logR_pred_mean_m = samples_m.mean(dim=1)
-    logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
+    # log_jet_samples = torch.log10(jet_samples)
+
+    # logR_pred_MC_E = samples_E.reshape(-1)
+    # logR_pred_median_E, _ = samples_E.median(dim=1)
+    # logR_pred_mean_E = samples_E.mean(dim=1)
+    # logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
+
+    # logR_pred_MC_m = samples_m.reshape(-1)
+    # logR_pred_median_m, _ = samples_m.median(dim=1)
+    # logR_pred_mean_m = samples_m.mean(dim=1)
+    # logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
 
     # min_values_E = min(min(logR_pred_MC_E.tolist()), min(targets_E.tolist()))
     # max_values_E = max(max(logR_pred_MC_E.tolist()), max(targets_E.tolist()))
     # min_values_m = min(min(logR_pred_MC_m.tolist()), min(targets_m.tolist()))
     # max_values_m = max(max(logR_pred_MC_m.tolist()), max(targets_m.tolist()))
 
-    min_values_E = min(targets_E.tolist())
-    max_values_E = max(targets_E.tolist())
-    min_values_m = min(targets_m.tolist())
-    max_values_m = max(targets_m.tolist())
+    min_values_E = min(jet_targets[:, 0].tolist())
+    max_values_E = max(jet_targets[:, 0].tolist())
+    min_values_m = min(jet_targets[:, 1].tolist())
+    max_values_m = max(jet_targets[:, 1].tolist())
 
     delta_E = max_values_E - min_values_E
     delta_m = max_values_m - min_values_m
@@ -1561,20 +1785,41 @@ def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihood
     max_values_E = max_values_E + 0.05 * delta_E
     max_values_m = max_values_m + 0.05 * delta_m
 
+    min_values_E_log = np.log10(min(jet_targets[:, 0].tolist()))
+    max_values_E_log = np.log10(max(jet_targets[:, 0].tolist()))
+    min_values_m_log = np.log10(min(jet_targets[:, 1].tolist()))
+    max_values_m_log = np.log10(max(jet_targets[:, 1].tolist()))
+
+    delta_E = max_values_E_log - min_values_E_log
+    delta_m = max_values_m_log - min_values_m_log
+
+    min_values_E_log = min_values_E_log - 0.05 * delta_E
+    min_values_m_log = min_values_m_log - 0.05 * delta_m
+    max_values_E_log = max_values_E_log + 0.05 * delta_E
+    max_values_m_log = max_values_m_log + 0.05 * delta_m
+
+    jet_targets = jet_targets.numpy()
+
     with PdfPages(os.path.join(plot_dir, name)) as pdf:
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_median_E, logR_pred_median_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (jet_targets[:, 0], jet_targets[:, 1]),
+                (jet_samples[:, 0], jet_samples[:, 1]),
+                (jet_median[:, 0], jet_median[:, 1]),
+                (jet_mean[:, 0], jet_mean[:, 1]),
+                (jet_mode[:, 0], jet_mode[:, 1]),
+                (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+                (jet_jetmode[:, 0], jet_jetmode[:, 1]),
             ],
             [
-                "Truth", "MC", "Median", "Mean", "Mode"
+                "Truth", "Samples", "Median", "Mean", "Mode", "Jet Mean", "Jet Mode"
             ]
         ):
             logging.info(f"Plotting 2d hist: {plot_title}")
             fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
+                data=[np.log10(target_data_E), np.log10(target_data_m)],
                 labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=False,
@@ -1587,9 +1832,9 @@ def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihood
             plt.close(fig)
         
             fig, axs = make_hist_2dim(
-                data=[10.**(target_data_E.numpy()), 10.**(target_data_m.numpy())],
-                labels=[r"$\text{Jet energy } E$", r"$\text{Jet mass } m$"],
-                ranges=[[10.**min_values_E, 10.**max_values_E], [10.**min_values_m, 10.**max_values_m]],
+                data=[target_data_E, target_data_m],
+                labels=[r"$\text{Jet energy } E [\text{GeV}]$", r"$\text{Jet mass } m [\text{GeV}]$"],
+                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=False,
@@ -1601,28 +1846,35 @@ def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihood
             plt.close(fig)
     
         data_comparison = [
-            (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_median_E, logR_pred_median_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+            (jet_samples[:, 0], jet_samples[:, 1]),
+            (jet_median[:, 0], jet_median[:, 1]),
+            (jet_mean[:, 0], jet_mean[:, 1]),
+            (jet_mode[:, 0], jet_mode[:, 1]),
+            (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+            (jet_jetmode[:, 0], jet_jetmode[:, 1]),
         ]
         titles_comparison = [
-            "MC / True", "Median / True", "Mean / True", "Mode / True"
+            "Samples / True", "Median / True", "Mean / True", "Mode / True", "Jet Mean / True", "Jet Mode / True"
         ]
-        if train_targets != None:
-            data_comparison.append((train_targets_E, train_targets_m))
-            titles_comparison.append("Train / True")
+        # if train_targets != None:
+        data_comparison.append((train_jet_targets[:, 0], train_jet_targets[:, 1]))
+        titles_comparison.append("Train / True")
 
-        data_E_ref = targets_E.numpy()
-        data_m_ref = targets_m.numpy()
+        data_E_ref = jet_targets[:, 0]
+        data_m_ref = jet_targets[:, 1]
+        log_data_E_ref = np.log10(data_E_ref)
+        log_data_m_ref = np.log10(data_m_ref)
 
         for (target_data_E, target_data_m), plot_title in zip(data_comparison, titles_comparison):
             logging.info(f"Plotting 2d relative hist: {plot_title}")
-            data_E = target_data_E.numpy()
-            data_m = target_data_m.numpy()
+            data_E = target_data_E
+            data_m = target_data_m
 
             fig, axs = make_hist_2dim_ratio(
-                data=[data_E, data_m],
-                data_ref=[data_E_ref, data_m_ref],
+                data=[np.log10(data_E), np.log10(data_m)],
+                data_ref=[log_data_E_ref, log_data_m_ref],
                 labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 sigma_max=3.
@@ -1634,14 +1886,14 @@ def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihood
 
         for (target_data_E, target_data_m), plot_title in zip(data_comparison, titles_comparison):
             logging.info(f"Plotting 2d relative hist: {plot_title}")
-            data_E = target_data_E.numpy()
-            data_m = target_data_m.numpy()
+            data_E = target_data_E
+            data_m = target_data_m
 
             fig, axs = make_hist_2dim_ratio(
-                data=[data_E, data_m],
-                data_ref=[data_E_ref, data_m_ref],
+                data=[np.log10(data_E), np.log10(data_m)],
+                data_ref=[log_data_E_ref, log_data_m_ref],
                 labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 sigma_max=0.01
@@ -1651,36 +1903,26 @@ def plot_pred_jet_correlation(name, targets, samples, input_data, log_likelihood
             pdf.savefig(fig)
             plt.close(fig)
 
-def plot_pred_jet_correlation_marginalized(name, targets, samples, input_data, log_likelihoods, plot_dir, train_targets=None, train_input_data=None):
+def plot_pred_jet_correlation_marginalized(name, targets, samples: SampleEvaluation, input_data, plot_dir, train_targets=None, train_input_data=None):
     logging.info("Plotting joint jet correlations marginalized")
-    targets = 10.**targets
-    r: torch.FloatTensor = 10**samples
-
     input_data: torch.FloatTensor = input_data[:, :2]
-    targets = input_data / targets
-    targets = torch.log10(targets)
-    targets_E = targets[:, 0]
-    targets_m = targets[:, 1]
 
-    input_data = input_data.unsqueeze(-1).expand(-1, -1, r.size(-1))
-    samples = input_data / r
-    samples = torch.log10(samples)
+    jet_targets = 10.**targets
+    jet_targets = input_data / jet_targets
+    
+    input_data_samples = input_data.unsqueeze(-1).expand(-1, -1, samples.response_samples.shape[-1]).numpy()
+    input_data = input_data.numpy()
+    
+    jet_samples = input_data_samples / samples.response_samples
+    jet_mean = input_data / samples.response_mean
+    jet_mode = input_data / samples.response_mode
+    jet_jetmean = input_data / samples.response_jet_mean
+    jet_jetmode = input_data / samples.response_jet_mode
 
-    samples_E = samples[:, 0]
-    samples_m = samples[:, 1]
-
-    logR_pred_MC_E = samples_E.reshape(-1)
-    logR_pred_mean_E = samples_E.mean(dim=1)
-    logR_pred_max_likelihood_E = samples_E[np.arange(samples_E.shape[0]), np.argmax(log_likelihoods[:, 0], axis=1)]
-
-    logR_pred_MC_m = samples_m.reshape(-1)
-    logR_pred_mean_m = samples_m.mean(dim=1)
-    logR_pred_max_likelihood_m = samples_m[np.arange(samples_m.shape[0]), np.argmax(samples_m, axis=1)]
-
-    min_values_E = min(targets_E.tolist())
-    max_values_E = max(targets_E.tolist())
-    min_values_m = min(targets_m.tolist())
-    max_values_m = max(targets_m.tolist())
+    min_values_E = min(jet_targets[:, 0].tolist())
+    max_values_E = max(jet_targets[:, 0].tolist())
+    min_values_m = min(jet_targets[:, 1].tolist())
+    max_values_m = max(jet_targets[:, 1].tolist())
 
     delta_E = max_values_E - min_values_E
     delta_m = max_values_m - min_values_m
@@ -1690,20 +1932,40 @@ def plot_pred_jet_correlation_marginalized(name, targets, samples, input_data, l
     max_values_E = max_values_E + 0.05 * delta_E
     max_values_m = max_values_m + 0.05 * delta_m
 
+    min_values_E_log = np.log10(min(jet_targets[:, 0].tolist()))
+    max_values_E_log = np.log10(max(jet_targets[:, 0].tolist()))
+    min_values_m_log = np.log10(min(jet_targets[:, 1].tolist()))
+    max_values_m_log = np.log10(max(jet_targets[:, 1].tolist()))
+
+    delta_E = max_values_E_log - min_values_E_log
+    delta_m = max_values_m_log - min_values_m_log
+
+    min_values_E_log = min_values_E_log - 0.05 * delta_E
+    min_values_m_log = min_values_m_log - 0.05 * delta_m
+    max_values_E_log = max_values_E_log + 0.05 * delta_E
+    max_values_m_log = max_values_m_log + 0.05 * delta_m
+
+    jet_targets = jet_targets.numpy()
+
     with PdfPages(os.path.join(plot_dir, name)) as pdf:
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (jet_targets[:, 0], jet_targets[:, 1]),
+                (jet_samples[:, 0], jet_samples[:, 1]),
+                (jet_mean[:, 0], jet_mean[:, 1]),
+                (jet_mode[:, 0], jet_mode[:, 1]),
+                (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+                (jet_jetmode[:, 0], jet_jetmode[:, 1]),
             ],
             [
-                "Truth", "MC", "Mean", "Mode"
+                "Truth", "Sampling", "Mean", "Mode", "Jet Mean", "Jet Mode"
             ]
         ):
             logging.info(f"Plotting 2d hist: {plot_title}")
             fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
+                data=[np.log10(target_data_E), np.log10(target_data_m)],
                 labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=True,
@@ -1717,16 +1979,21 @@ def plot_pred_jet_correlation_marginalized(name, targets, samples, input_data, l
 
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (jet_targets[:, 0], jet_targets[:, 1]),
+                (jet_samples[:, 0], jet_samples[:, 1]),
+                (jet_mean[:, 0], jet_mean[:, 1]),
+                (jet_mode[:, 0], jet_mode[:, 1]),
+                (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+                (jet_jetmode[:, 0], jet_jetmode[:, 1]),
             ],
             [
-                "Truth", "MC", "Mean", "Mode"
+                "Truth", "Sampling", "Mean", "Mode", "Jet Mean", "Jet Mode"
             ]
         ):
             fig, axs = make_hist_2dim(
-                data=[10.**(target_data_E.numpy()), 10.**(target_data_m.numpy())],
+                data=[target_data_E, target_data_m],
                 labels=[r"$\text{Jet energy } E$", r"$\text{Jet mass } m$"],
-                ranges=[[10.**min_values_E, 10.**max_values_E], [10.**min_values_m, 10.**max_values_m]],
+                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=True,
@@ -1739,17 +2006,22 @@ def plot_pred_jet_correlation_marginalized(name, targets, samples, input_data, l
 
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (jet_targets[:, 0], jet_targets[:, 1]),
+                (jet_samples[:, 0], jet_samples[:, 1]),
+                (jet_mean[:, 0], jet_mean[:, 1]),
+                (jet_mode[:, 0], jet_mode[:, 1]),
+                (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+                (jet_jetmode[:, 0], jet_jetmode[:, 1]),
             ],
             [
-                "Truth Marginalized", "MC", "Mean", "Mode"
+                "Truth Marginalized", "Sampling", "Mean", "Mode", "Jet Mean", "Jet Mode"
             ]
         ):
             logging.info(f"Plotting 2d hist: {plot_title}")
             fig, axs = make_hist_2dim(
-                data=[target_data_E.numpy(), target_data_m.numpy()],
+                data=[np.log10(target_data_E), np.log10(target_data_m)],
                 labels=[r"$\text{Jet energy } \log_{10} E$", r"$\text{Jet mass } \log_{10} m$"],
-                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
+                ranges=[[min_values_E_log, max_values_E_log], [min_values_m_log, max_values_m_log]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=False,
@@ -1763,16 +2035,21 @@ def plot_pred_jet_correlation_marginalized(name, targets, samples, input_data, l
 
         for (target_data_E, target_data_m), plot_title in zip(
             [
-                (targets_E, targets_m), (logR_pred_MC_E, logR_pred_MC_m), (logR_pred_mean_E, logR_pred_mean_m), (logR_pred_max_likelihood_E, logR_pred_max_likelihood_m)
+                (jet_targets[:, 0], jet_targets[:, 1]),
+                (jet_samples[:, 0], jet_samples[:, 1]),
+                (jet_mean[:, 0], jet_mean[:, 1]),
+                (jet_mode[:, 0], jet_mode[:, 1]),
+                (jet_jetmean[:, 0], jet_jetmean[:, 1]),
+                (jet_jetmode[:, 0], jet_jetmode[:, 1])
             ],
             [
-                "Truth Marginalized", "MC", "Mean", "Mode"
+                "Truth Marginalized", "Sampling", "Mean", "Mode", "Jet Mean", "Jet Mode"
             ]
         ):
             fig, axs = make_hist_2dim(
-                data=[10.**(target_data_E.numpy()), 10.**(target_data_m.numpy())],
+                data=[target_data_E, target_data_m],
                 labels=[r"$\text{Jet energy } E$", r"$\text{Jet mass } m$"],
-                ranges=[[10.**min_values_E, 10.**max_values_E], [10.**min_values_m, 10.**max_values_m]],
+                ranges=[[min_values_E, max_values_E], [min_values_m, max_values_m]],
                 showdiag=False,
                 nbins=[100,100],
                 norm_columns=False,

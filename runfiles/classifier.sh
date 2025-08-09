@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p a30
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=300G
 #SBATCH --gres=gpu:1
 #SBATCH --time=40:00:00
@@ -9,12 +9,10 @@
 #SBATCH --output=/remote/gpu03/schiller/JetCalibration/results/output.txt
 #SBATCH --error=/remote/gpu03/schiller/JetCalibration/results/error.txt
 
-ulimit -n 1000000
-
 my_arg=$1
 
 source activate JetCalibration
 cd JetCalibration
 
 export PYTHONPATH=/remote/gpu03/schiller/JetCalibration
-python main.py plot $my_arg
+python main.py classifier $my_arg

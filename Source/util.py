@@ -10,6 +10,7 @@ from pytorch_lightning import Trainer, LightningModule
 import time
 import logging
 
+import torch.nn as nn
 
 class PrintingCallback(Callback):
     """
@@ -61,5 +62,29 @@ class PrintingCallback(Callback):
         # if trainer.current_epoch == 0:
         #     return
         end_time = time.time()
-        logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds. Training loss: {trainer.callback_metrics['train_loss']:.5f}, Validation loss: {trainer.callback_metrics['val_loss']:.5f}")
+        logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds") #. Training loss: {pl_module.train_epoch_losses[-1]:.10f}, Validation loss: {pl_module.val_epoch_losses[-1]:.10f}")
+        # try:
+        #   logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds. Training loss: {trainer.callback_metrics['train_loss']:.10f}, Validation loss: {trainer.callback_metrics['val_loss']:.10f}")
+        # except:
+        #    logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds.")
         # logging.info(f"Finished epoch {trainer.current_epoch} in {round((end_time - self.start_time), 1)} seconds.")
+
+def init_weights(module, init_scale):
+  if isinstance(module, nn.Linear):
+    # nn.init.normal_(module.weight, mean=0.0, std=init_scale)
+    nn.init.xavier_normal_(module.weight, gain=init_scale)
+    if module.bias is not None:
+      nn.init.zeros_(module.bias)
+  elif isinstance(module, nn.Embedding):
+    nn.init.normal_(module.weight, mean=0.0, std=init_scale)
+  elif isinstance(module, nn.MultiheadAttention):
+    module._reset_parameters()
+  elif (
+    isinstance(module, (nn.GroupNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm))
+    or "LayerNorm" in module.__class__.__name__
+    or "RMSNorm" in module.__class__.__name__
+  ):
+    if hasattr(module, "weight") and module.weight is not None:
+        module.weight.data.fill_(1.0)
+    if hasattr(module, "bias") and module.bias is not None:
+        module.bias.data.zero_()

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
+def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0., use_silu=False):
     """
     Creates a multi-layer perceptron (MLP) neural network.
 
@@ -30,7 +30,10 @@ def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
     layers = []
     for _ in range(num_layers):
         layers.append(nn.Linear(input_dim, hidden_dim))
-        layers.append(nn.ReLU())
+        if use_silu:
+            layers.append(nn.SiLU())
+        else:
+            layers.append(nn.ReLU())
         if drop != 0.:
             layers.append(nn.Dropout(drop))
         input_dim = hidden_dim
@@ -38,7 +41,7 @@ def MLP(input_dim, output_dim, hidden_dim, num_layers, drop=0.):
     return nn.Sequential(*layers)
 
 class ResLayer(nn.Module):
-    def __init__(self, hidden_dim, interm_dim, drop=0.):
+    def __init__(self, hidden_dim, interm_dim, drop=0., use_silu=True):
         super().__init__()
 
         layers = []
@@ -46,13 +49,13 @@ class ResLayer(nn.Module):
             layers.append(nn.Dropout(drop))
         layers += [
             nn.Linear(hidden_dim, interm_dim),
-            nn.SiLU()
+            nn.SiLU() if use_silu else nn.ReLU()
         ]
         if drop != 0.:
             layers.append(nn.Dropout(drop))
         layers += [
             nn.Linear(interm_dim, hidden_dim),
-            nn.SiLU()
+            nn.SiLU() if use_silu else nn.ReLU()
         ]
 
         self.mlp = nn.Sequential(*layers)
@@ -61,15 +64,18 @@ class ResLayer(nn.Module):
         return x + self.mlp(x)
 
 class ResMLP(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim, interm_dim, num_layers, drop=0.):
+    def __init__(self, input_dim, output_dim, hidden_dim, interm_dim, num_layers, drop=0., use_silu=True):
         super().__init__()
 
         layers = []
 
         layers.append(nn.Linear(input_dim, hidden_dim))
-        layers.append(nn.SiLU())
+        if use_silu:
+            layers.append(nn.SiLU())
+        else:
+            layers.append(nn.ReLU())
         for _ in range(num_layers):
-            layers.append(ResLayer(hidden_dim, interm_dim, drop))
+            layers.append(ResLayer(hidden_dim, interm_dim, drop, use_silu))
         layers.append(nn.Linear(hidden_dim, output_dim))
 
         self.res_mlp = nn.Sequential(*layers)
